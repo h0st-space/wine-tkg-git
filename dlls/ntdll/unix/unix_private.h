@@ -101,6 +101,7 @@ struct ntdll_thread_data
     PRTL_THREAD_START_ROUTINE start;  /* thread entry point */
     void              *param;         /* thread entry point parameter */
     void              *jmp_buf;       /* setjmp buffer for exception handling */
+    int                fast_alert_obj; /* fd for the fast alert event */
 };
 
 C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
@@ -194,6 +195,8 @@ extern NTSTATUS load_start_exe( WCHAR **image, void **module );
 extern ULONG_PTR redirect_arm64ec_rva( void *module, ULONG_PTR rva, const IMAGE_ARM64EC_METADATA *metadata );
 extern void start_server( BOOL debug );
 
+extern pthread_mutex_t fd_cache_mutex;
+
 extern unsigned int server_call_unlocked( void *req_ptr );
 extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
 extern void server_leave_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
@@ -201,6 +204,7 @@ extern unsigned int server_select( const select_op_t *select_op, data_size_t siz
                                    timeout_t abs_timeout, context_t *context, user_apc_t *user_apc );
 extern unsigned int server_wait( const select_op_t *select_op, data_size_t size, UINT flags,
                                  const LARGE_INTEGER *timeout );
+extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout );
 extern unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *call,
                                               apc_result_t *result );
 extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
@@ -335,6 +339,7 @@ extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULO
 extern void set_async_direct_result( HANDLE *async_handle, NTSTATUS status, ULONG_PTR information, BOOL mark_pending );
 
 extern NTSTATUS unixcall_wine_dbg_write( void *args );
+extern NTSTATUS unixcall_wine_needs_override_large_address_aware( void *args );
 extern NTSTATUS unixcall_wine_server_call( void *args );
 extern NTSTATUS unixcall_wine_server_fd_to_handle( void *args );
 extern NTSTATUS unixcall_wine_server_handle_to_fd( void *args );
@@ -348,6 +353,8 @@ extern NTSTATUS wow64_wine_spawnvp( void *args );
 #endif
 
 extern void dbg_init(void);
+
+extern void close_fast_sync_obj( HANDLE handle );
 
 extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
                                           PNTAPCFUNC func, NTSTATUS status );
@@ -415,7 +422,7 @@ static inline async_data_t server_async( HANDLE handle, struct async_fileio *use
 
 static inline NTSTATUS wait_async( HANDLE handle, BOOL alertable )
 {
-    return NtWaitForSingleObject( handle, alertable, NULL );
+    return server_wait_for_object( handle, alertable, NULL );
 }
 
 static inline BOOL in_wow64_call(void)
@@ -541,5 +548,7 @@ static inline NTSTATUS map_section( HANDLE mapping, void **ptr, SIZE_T *size, UL
     return NtMapViewOfSection( mapping, NtCurrentProcess(), ptr, user_space_wow_limit,
                                0, NULL, size, ViewShare, 0, protect );
 }
+
+BOOL CDECL __wine_needs_override_large_address_aware(void);
 
 #endif /* __NTDLL_UNIX_PRIVATE_H */

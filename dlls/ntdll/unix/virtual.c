@@ -3441,6 +3441,19 @@ NTSTATUS virtual_map_builtin_module( HANDLE mapping, void **module, SIZE_T *size
     return status;
 }
 
+BOOL CDECL __wine_needs_override_large_address_aware(void)
+{
+    static int needs_override = -1;
+
+    if (needs_override == -1)
+    {
+        const char *str = getenv( "WINE_LARGE_ADDRESS_AWARE" );
+
+        needs_override = !str || atoi(str) == 1;
+    }
+    return needs_override;
+}
+
 
 /***********************************************************************
  *           virtual_map_module
@@ -3476,6 +3489,11 @@ NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTIO
     if (shared_file) NtClose( shared_file );
     free( image_info );
     return status;
+}
+
+NTSTATUS unixcall_wine_needs_override_large_address_aware( void *args )
+{
+    return __wine_needs_override_large_address_aware();
 }
 
 

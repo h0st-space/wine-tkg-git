@@ -382,6 +382,7 @@ AC_CHECK_HEADERS(\
 	linux/input.h \
 	linux/ioctl.h \
 	linux/major.h \
+	linux/ntsync.h \
 	linux/param.h \
 	linux/serial.h \
 	linux/types.h \
@@ -3413,6 +3414,7 @@ WINE_CONFIG_MAKEFILE(po)
 WINE_CONFIG_MAKEFILE(programs/arp)
 WINE_CONFIG_MAKEFILE(programs/aspnet_regiis)
 WINE_CONFIG_MAKEFILE(programs/attrib)
+WINE_CONFIG_MAKEFILE(programs/belauncher)
 WINE_CONFIG_MAKEFILE(programs/cabarc)
 WINE_CONFIG_MAKEFILE(programs/cacls)
 WINE_CONFIG_MAKEFILE(programs/certutil)
