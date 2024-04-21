@@ -29,6 +29,7 @@
 #include "winternl.h"
 #include "rtlsupportapi.h"
 #include "unixlib.h"
+#include "wine/debug.h"
 #include "wine/asm.h"
 
 #define MAX_NT_PATH_LENGTH 277
@@ -106,11 +107,49 @@ extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *
 
 extern struct _KUSER_SHARED_DATA *user_shared_data;
 
+/* inline version of RtlEnterCriticalSection */
+static inline void enter_critical_section( RTL_CRITICAL_SECTION *crit )
+{
+    if (InterlockedIncrement( &crit->LockCount ))
+    {
+        if (crit->OwningThread == ULongToHandle(GetCurrentThreadId()))
+        {
+            crit->RecursionCount++;
+            return;
+        }
+        RtlpWaitForCriticalSection( crit );
+    }
+    crit->OwningThread   = ULongToHandle(GetCurrentThreadId());
+    crit->RecursionCount = 1;
+}
+
+/* inline version of RtlLeaveCriticalSection */
+static inline void leave_critical_section( RTL_CRITICAL_SECTION *crit )
+{
+    WINE_DECLARE_DEBUG_CHANNEL(ntdll);
+    if (--crit->RecursionCount)
+    {
+        if (crit->RecursionCount > 0) InterlockedDecrement( &crit->LockCount );
+        else ERR_(ntdll)( "section %p is not acquired\n", crit );
+    }
+    else
+    {
+        crit->OwningThread = 0;
+        if (InterlockedDecrement( &crit->LockCount ) >= 0)
+            RtlpUnWaitCriticalSection( crit );
+    }
+}
+
 #ifdef _WIN64
 static inline TEB64 *NtCurrentTeb64(void) { return NULL; }
 #else
 static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
 #endif
+
+/* version */
+extern const char * CDECL wine_get_version(void);
+extern const char * CDECL wine_get_build_id(void);
+extern void CDECL wine_get_host_version( const char **sysname, const char **release );
 
 /* convert from straight ASCII to Unicode without depending on the current codepage */
 static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )

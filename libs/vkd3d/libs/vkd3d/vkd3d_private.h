@@ -55,7 +55,7 @@
 
 #define VKD3D_MAX_COMPATIBLE_FORMAT_COUNT 6u
 #define VKD3D_MAX_QUEUE_FAMILY_COUNT      3u
-#define VKD3D_MAX_SHADER_EXTENSIONS       4u
+#define VKD3D_MAX_SHADER_EXTENSIONS       5u
 #define VKD3D_MAX_SHADER_STAGES           5u
 #define VKD3D_MAX_VK_SYNC_OBJECTS         4u
 #define VKD3D_MAX_DEVICE_BLOCKED_QUEUES  16u
@@ -128,11 +128,13 @@ struct vkd3d_vulkan_info
     bool KHR_sampler_mirror_clamp_to_edge;
     bool KHR_timeline_semaphore;
     /* EXT device extensions */
+    bool EXT_4444_formats;
     bool EXT_calibrated_timestamps;
     bool EXT_conditional_rendering;
     bool EXT_debug_marker;
     bool EXT_depth_clip_enable;
     bool EXT_descriptor_indexing;
+    bool EXT_fragment_shader_interlock;
     bool EXT_mutable_descriptor_type;
     bool EXT_robustness2;
     bool EXT_shader_demote_to_helper_invocation;
@@ -184,6 +186,7 @@ struct vkd3d_instance
     struct vkd3d_vulkan_info vk_info;
     struct vkd3d_vk_global_procs vk_global_procs;
     void *libvulkan;
+    uint32_t vk_api_version;
 
     uint64_t config_flags;
     enum vkd3d_api_version api_version;
@@ -202,35 +205,10 @@ union vkd3d_thread_handle
     void *handle;
 };
 
-struct vkd3d_mutex
-{
-    CRITICAL_SECTION lock;
-};
-
 struct vkd3d_cond
 {
     CONDITION_VARIABLE cond;
 };
-
-static inline void vkd3d_mutex_init(struct vkd3d_mutex *lock)
-{
-    InitializeCriticalSection(&lock->lock);
-}
-
-static inline void vkd3d_mutex_lock(struct vkd3d_mutex *lock)
-{
-    EnterCriticalSection(&lock->lock);
-}
-
-static inline void vkd3d_mutex_unlock(struct vkd3d_mutex *lock)
-{
-    LeaveCriticalSection(&lock->lock);
-}
-
-static inline void vkd3d_mutex_destroy(struct vkd3d_mutex *lock)
-{
-    DeleteCriticalSection(&lock->lock);
-}
 
 static inline void vkd3d_cond_init(struct vkd3d_cond *cond)
 {
@@ -287,52 +265,10 @@ union vkd3d_thread_handle
     void *handle;
 };
 
-struct vkd3d_mutex
-{
-    pthread_mutex_t lock;
-};
-
 struct vkd3d_cond
 {
     pthread_cond_t cond;
 };
-
-
-static inline void vkd3d_mutex_init(struct vkd3d_mutex *lock)
-{
-    int ret;
-
-    ret = pthread_mutex_init(&lock->lock, NULL);
-    if (ret)
-        ERR("Could not initialize the mutex, error %d.\n", ret);
-}
-
-static inline void vkd3d_mutex_lock(struct vkd3d_mutex *lock)
-{
-    int ret;
-
-    ret = pthread_mutex_lock(&lock->lock);
-    if (ret)
-        ERR("Could not lock the mutex, error %d.\n", ret);
-}
-
-static inline void vkd3d_mutex_unlock(struct vkd3d_mutex *lock)
-{
-    int ret;
-
-    ret = pthread_mutex_unlock(&lock->lock);
-    if (ret)
-        ERR("Could not unlock the mutex, error %d.\n", ret);
-}
-
-static inline void vkd3d_mutex_destroy(struct vkd3d_mutex *lock)
-{
-    int ret;
-
-    ret = pthread_mutex_destroy(&lock->lock);
-    if (ret)
-        ERR("Could not destroy the mutex, error %d.\n", ret);
-}
 
 static inline void vkd3d_cond_init(struct vkd3d_cond *cond)
 {
@@ -1279,6 +1215,7 @@ struct d3d12_pipeline_state
 
     struct d3d12_pipeline_uav_counter_state uav_counters;
 
+    ID3D12RootSignature *implicit_root_signature;
     struct d3d12_device *device;
 
     struct vkd3d_private_store private_store;
@@ -1735,7 +1672,7 @@ struct vkd3d_desc_object_cache
 /* ID3D12Device */
 struct d3d12_device
 {
-    ID3D12Device7 ID3D12Device7_iface;
+    ID3D12Device9 ID3D12Device9_iface;
     unsigned int refcount;
 
     VkDevice vk_device;
@@ -1743,6 +1680,7 @@ struct d3d12_device
     struct vkd3d_vk_device_procs vk_procs;
     PFN_vkd3d_signal_event signal_event;
     size_t wchar_size;
+    enum vkd3d_shader_spirv_environment environment;
 
     struct vkd3d_gpu_va_allocator gpu_va_allocator;
 
@@ -1810,29 +1748,29 @@ struct vkd3d_queue *d3d12_device_get_vkd3d_queue(struct d3d12_device *device, D3
 bool d3d12_device_is_uma(struct d3d12_device *device, bool *coherent);
 void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
         const char *message, ...) VKD3D_PRINTF_FUNC(3, 4);
-struct d3d12_device *unsafe_impl_from_ID3D12Device7(ID3D12Device7 *iface);
+struct d3d12_device *unsafe_impl_from_ID3D12Device9(ID3D12Device9 *iface);
 HRESULT d3d12_device_add_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap);
 void d3d12_device_remove_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap);
 
 static inline HRESULT d3d12_device_query_interface(struct d3d12_device *device, REFIID iid, void **object)
 {
-    return ID3D12Device7_QueryInterface(&device->ID3D12Device7_iface, iid, object);
+    return ID3D12Device9_QueryInterface(&device->ID3D12Device9_iface, iid, object);
 }
 
 static inline ULONG d3d12_device_add_ref(struct d3d12_device *device)
 {
-    return ID3D12Device7_AddRef(&device->ID3D12Device7_iface);
+    return ID3D12Device9_AddRef(&device->ID3D12Device9_iface);
 }
 
 static inline ULONG d3d12_device_release(struct d3d12_device *device)
 {
-    return ID3D12Device7_Release(&device->ID3D12Device7_iface);
+    return ID3D12Device9_Release(&device->ID3D12Device9_iface);
 }
 
 static inline unsigned int d3d12_device_get_descriptor_handle_increment_size(struct d3d12_device *device,
         D3D12_DESCRIPTOR_HEAP_TYPE descriptor_type)
 {
-    return ID3D12Device7_GetDescriptorHandleIncrementSize(&device->ID3D12Device7_iface, descriptor_type);
+    return ID3D12Device9_GetDescriptorHandleIncrementSize(&device->ID3D12Device9_iface, descriptor_type);
 }
 
 /* utils */
@@ -1992,5 +1930,11 @@ static inline void vkd3d_prepend_struct(void *header, void *structure)
     vkd3d_structure->next = vkd3d_header->next;
     vkd3d_header->next = vkd3d_structure;
 }
+
+struct vkd3d_shader_cache;
+
+int vkd3d_shader_open_cache(struct vkd3d_shader_cache **cache);
+unsigned int vkd3d_shader_cache_incref(struct vkd3d_shader_cache *cache);
+unsigned int vkd3d_shader_cache_decref(struct vkd3d_shader_cache *cache);
 
 #endif  /* __VKD3D_PRIVATE_H */

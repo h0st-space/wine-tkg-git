@@ -319,6 +319,7 @@ struct user_driver_funcs
     BOOL    (*pProcessEvents)(DWORD);
     void    (*pReleaseDC)(HWND,HDC);
     BOOL    (*pScrollDC)(HDC,INT,INT,HRGN);
+    void    (*pSetActiveWindow)(HWND);
     void    (*pSetCapture)(HWND,UINT);
     void    (*pSetDesktopWindow)(HWND);
     void    (*pSetFocus)(HWND);
@@ -342,6 +343,8 @@ struct user_driver_funcs
     UINT    (*pVulkanInit)(UINT,void *,struct vulkan_funcs *);
     /* opengl support */
     struct opengl_funcs * (*pwine_get_wgl_driver)(UINT);
+    /* IME functions */
+    void    (*pUpdateCandidatePos)(HWND, const RECT *);
     /* thread management */
     void    (*pThreadDetach)(void);
 };

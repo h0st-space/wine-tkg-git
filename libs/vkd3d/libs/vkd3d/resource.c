@@ -1857,6 +1857,7 @@ static bool d3d12_resource_validate_texture_alignment(const D3D12_RESOURCE_DESC1
 
 HRESULT d3d12_resource_validate_desc(const D3D12_RESOURCE_DESC1 *desc, struct d3d12_device *device)
 {
+    const D3D12_MIP_REGION *mip_region = &desc->SamplerFeedbackMipRegion;
     const struct vkd3d_format *format;
 
     switch (desc->Dimension)
@@ -1892,6 +1893,13 @@ HRESULT d3d12_resource_validate_desc(const D3D12_RESOURCE_DESC1 *desc, struct d3
                 WARN("Invalid sample count 0.\n");
                 return E_INVALIDARG;
             }
+            if (desc->SampleDesc.Count > 1
+                    && !(desc->Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)))
+            {
+                WARN("Sample count %u invalid without ALLOW_RENDER_TARGET or ALLOW_DEPTH_STENCIL.\n",
+                        desc->SampleDesc.Count);
+                return E_INVALIDARG;
+            }
 
             if (!(format = vkd3d_format_from_d3d12_resource_desc(device, desc, 0)))
             {
@@ -1925,6 +1933,12 @@ HRESULT d3d12_resource_validate_desc(const D3D12_RESOURCE_DESC1 *desc, struct d3
     }
 
     d3d12_validate_resource_flags(desc->Flags);
+
+    if (mip_region->Width && mip_region->Height && mip_region->Depth)
+    {
+        FIXME("Unhandled sampler feedback mip region size (%u, %u, %u).\n", mip_region->Width, mip_region->Height,
+                mip_region->Depth);
+    }
 
     return S_OK;
 }
@@ -1987,6 +2001,11 @@ static HRESULT d3d12_resource_init(struct d3d12_resource *resource, struct d3d12
     if (!is_valid_resource_state(initial_state))
     {
         WARN("Invalid initial resource state %#x.\n", initial_state);
+        return E_INVALIDARG;
+    }
+    if (initial_state == D3D12_RESOURCE_STATE_RENDER_TARGET && !(desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
+    {
+        WARN("Invalid initial resource state %#x for non-render-target.\n", initial_state);
         return E_INVALIDARG;
     }
 
@@ -2253,7 +2272,7 @@ HRESULT d3d12_reserved_resource_create(struct d3d12_device *device,
 HRESULT vkd3d_create_image_resource(ID3D12Device *device,
         const struct vkd3d_image_resource_create_info *create_info, ID3D12Resource **resource)
 {
-    struct d3d12_device *d3d12_device = unsafe_impl_from_ID3D12Device7((ID3D12Device7 *)device);
+    struct d3d12_device *d3d12_device = unsafe_impl_from_ID3D12Device9((ID3D12Device9 *)device);
     struct d3d12_resource *object;
     HRESULT hr;
 

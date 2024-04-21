@@ -155,6 +155,7 @@ static struct linux_device *get_linux_device(void)
         return NULL;
     }
 
+    fprintf( stderr, "wine: using fast synchronization.\n" );
     linux_device_object = device;
     return device;
 }
@@ -396,10 +397,6 @@ DECL_HANDLER(get_linux_sync_obj)
 {
 #ifdef HAVE_LINUX_NTSYNC_H
     struct object *obj;
-    static int once;
-
-    if (!once++)
-        fprintf( stderr, "wine: using fast synchronization.\n" );
 
     if ((obj = get_handle_obj( current->process, req->handle, 0, NULL )))
     {

@@ -45,6 +45,9 @@
 #ifdef HAVE_SCHED_H
 # include <sched.h>
 #endif
+#ifdef HAVE_SYS_RESOURCE_H
+# include <sys/resource.h>
+#endif
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -339,9 +342,10 @@ struct fast_sync_cache_entry
 
 static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
 {
-    /* save the handle now; as soon as the refcount hits 0 we cannot access the
-     * cache anymore */
+    /* save the handle and fd now; as soon as the refcount hits 0 we cannot
+     * access the cache anymore */
     HANDLE handle = wine_server_ptr_handle( cache->handle );
+    int fd = cache->fd;
     LONG refcount = InterlockedDecrement( &cache->refcount );
 
     assert( refcount >= 0 );
@@ -359,6 +363,7 @@ static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
         SERVER_END_REQ;
 
         assert( !ret );
+        close( fd );
     }
 }
 
@@ -832,33 +837,6 @@ static NTSTATUS fast_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *info 
     return ret;
 }
 
-static __u64 fast_get_timeout( const LARGE_INTEGER *timeout )
-{
-    struct timespec now;
-    timeout_t relative;
-
-    if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE)
-        return ~(__u64)0;
-
-    clock_gettime( CLOCK_MONOTONIC, &now );
-
-    if (timeout->QuadPart <= 0)
-    {
-        relative = -timeout->QuadPart;
-    }
-    else
-    {
-        LARGE_INTEGER system_now;
-
-        /* the system clock is REALTIME, so we need to convert to
-         * relative time first */
-        NtQuerySystemTime( &system_now );
-        relative = timeout->QuadPart - system_now.QuadPart;
-    }
-
-    return (now.tv_sec * 1000000000) + now.tv_nsec + (relative * 100);
-}
-
 static void select_queue( HANDLE queue )
 {
     SERVER_START_REQ( fast_select_queue )
@@ -900,6 +878,10 @@ static int get_fast_alert_obj(void)
         if ((ret = get_fast_sync_obj( alert_handle, 0, SYNCHRONIZE, &stack_cache, &cache )))
             ERR( "failed to get fast alert obj, status %#x\n", ret );
         data->fast_alert_obj = cache->fd;
+        /* Set the fd to -1 so release_fast_sync_obj() won't close it.
+         * Manhandling the cache entry here is fine since we're the only thread
+         * that can access our own alert event. */
+        cache->fd = -1;
         release_fast_sync_obj( cache );
         NtClose( alert_handle );
     }
@@ -912,9 +894,24 @@ static NTSTATUS linux_wait_objs( int device, const DWORD count, const int *objs,
 {
     struct ntsync_wait_args args = {0};
     unsigned long request;
+    struct timespec now;
     int ret;
 
-    args.timeout = fast_get_timeout( timeout );
+    if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE)
+    {
+        args.timeout = ~(__u64)0;
+    }
+    else if (timeout->QuadPart <= 0)
+    {
+        clock_gettime( CLOCK_MONOTONIC, &now );
+        args.timeout = (now.tv_sec * NSECPERSEC) + now.tv_nsec + (-timeout->QuadPart * 100);
+    }
+    else
+    {
+        args.timeout = (timeout->QuadPart * 100) - (SECS_1601_TO_1970 * NSECPERSEC);
+        args.flags |= NTSYNC_WAIT_REALTIME;
+    }
+
     args.objs = (uintptr_t)objs;
     args.count = count;
     args.owner = GetCurrentThreadId();
@@ -2511,7 +2508,17 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
 NTSTATUS WINAPI NtYieldExecution(void)
 {
 #ifdef HAVE_SCHED_YIELD
+#ifdef RUSAGE_THREAD
+    struct rusage u1, u2;
+    int ret;
+
+    ret = getrusage( RUSAGE_THREAD, &u1 );
+#endif
     sched_yield();
+#ifdef RUSAGE_THREAD
+    if (!ret) ret = getrusage( RUSAGE_THREAD, &u2 );
+    if (!ret && u1.ru_nvcsw == u2.ru_nvcsw && u1.ru_nivcsw == u2.ru_nivcsw) return STATUS_NO_YIELD_PERFORMED;
+#endif
     return STATUS_SUCCESS;
 #else
     return STATUS_NO_YIELD_PERFORMED;

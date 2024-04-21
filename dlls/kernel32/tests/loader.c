@@ -28,6 +28,7 @@
 #include "winbase.h"
 #include "winternl.h"
 #include "winnls.h"
+#include "winuser.h"
 #include "wine/test.h"
 #include "delayloadhandler.h"
 
@@ -2450,14 +2451,17 @@ static HANDLE gen_forward_chain_testdll( char testdll_path[MAX_PATH],
     };
     struct expdesc
     {
-        IMAGE_EXPORT_DIRECTORY dir;
+        const IMAGE_EXPORT_DIRECTORY dir;
+
         DWORD functions[2];
-        DWORD names[2];
-        WORD name_ords[2];
-        char str_forward_test_func[32];
-        char str_forward_test_func2[32];
-        char dll_name[MAX_PATH];
-        char strpool[2][MAX_PATH + 16];
+
+        const DWORD names[2];
+        const WORD name_ords[2];
+        const char str_forward_test_func[32];
+        const char str_forward_test_func2[32];
+
+        char dll_name[MAX_PATH];         /* dynamically populated */
+        char strpool[2][MAX_PATH + 16];  /* for names of export forwarders */
     } expdesc = {
         .dir = {
             .Characteristics       = 0,
@@ -2471,8 +2475,8 @@ static HANDLE gen_forward_chain_testdll( char testdll_path[MAX_PATH],
             .AddressOfNameOrdinals = edata_rva + offsetof(struct expdesc, name_ords),
         },
         .functions = {
-            text_rva + 0x4,
-            text_rva + 0x8,
+            text_rva + 0x4,  /* may be overwritten */
+            text_rva + 0x8,  /* may be overwritten */
         },
         .names = {
             edata_rva + offsetof(struct expdesc, str_forward_test_func),
@@ -2487,11 +2491,12 @@ static HANDLE gen_forward_chain_testdll( char testdll_path[MAX_PATH],
     };
     struct impdesc
     {
-        IMAGE_IMPORT_DESCRIPTOR descr[2];
-        IMAGE_THUNK_DATA original_thunks[3];
-        IMAGE_THUNK_DATA thunks[3];
-        struct { WORD hint; char name[32]; } impname_forward_test_func;
-        char module[MAX_PATH];
+        const IMAGE_IMPORT_DESCRIPTOR descr[2];
+        const IMAGE_THUNK_DATA original_thunks[3];
+        const IMAGE_THUNK_DATA thunks[3];
+        const struct { WORD hint; char name[32]; } impname_forward_test_func;
+
+        char module[MAX_PATH];  /* dynamically populated */
     } impdesc = {
         .descr = {
             {
@@ -2821,23 +2826,23 @@ static void test_export_forwarder_dep_chain(void)
 {
     winetest_push_context( "no import" );
     /* export forwarder does not introduce a dependency on its own */
-    subtest_export_forwarder_dep_chain( 2, FALSE, 0 );
+    subtest_export_forwarder_dep_chain( 2, 0, FALSE );
     winetest_pop_context();
 
     winetest_push_context( "static import of export forwarder" );
-    subtest_export_forwarder_dep_chain( 2, TRUE, 0 );
+    subtest_export_forwarder_dep_chain( 2, 0, TRUE );
     winetest_pop_context();
 
     winetest_push_context( "static import of chained export forwarder" );
-    subtest_export_forwarder_dep_chain( 3, TRUE, 0 );
+    subtest_export_forwarder_dep_chain( 3, 0, TRUE );
     winetest_pop_context();
 
     winetest_push_context( "dynamic import of export forwarder" );
-    subtest_export_forwarder_dep_chain( 2, FALSE, 1 );
+    subtest_export_forwarder_dep_chain( 2, 1, FALSE );
     winetest_pop_context();
 
     winetest_push_context( "dynamic import of chained export forwarder" );
-    subtest_export_forwarder_dep_chain( 3, FALSE, 2 );
+    subtest_export_forwarder_dep_chain( 3, 2, FALSE );
     winetest_pop_context();
 }
 
@@ -4637,6 +4642,79 @@ static void test_Wow64Transition(void)
             debugstr_wn(name->SectionFileName.Buffer, name->SectionFileName.Length / sizeof(WCHAR)));
 }
 
+static inline WCHAR toupperW(WCHAR c)
+{
+    WCHAR tmp = c;
+    CharUpperBuffW(&tmp, 1);
+    return tmp;
+}
+
+static ULONG hash_basename(const WCHAR *basename)
+{
+    WORD version = MAKEWORD(NtCurrentTeb()->Peb->OSMinorVersion,
+                            NtCurrentTeb()->Peb->OSMajorVersion);
+    ULONG hash = 0;
+
+    if (version >= 0x0602)
+    {
+        for (; *basename; basename++)
+            hash = hash * 65599 + toupperW(*basename);
+    }
+    else if (version == 0x0601)
+    {
+        for (; *basename; basename++)
+            hash = hash + 65599 * toupperW(*basename);
+    }
+    else
+        hash = toupperW(basename[0]) - 'A';
+
+    return hash & 31;
+}
+
+static void test_HashLinks(void)
+{
+    static WCHAR ntdllW[] = {'n','t','d','l','l','.','d','l','l',0};
+    static WCHAR kernel32W[] = {'k','e','r','n','e','l','3','2','.','d','l','l',0};
+
+    LIST_ENTRY *hash_map, *entry, *mark;
+    LDR_DATA_TABLE_ENTRY *module;
+    BOOL found;
+
+    entry = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
+    entry = entry->Flink;
+
+    module = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+    entry = module->HashLinks.Blink;
+
+    hash_map = entry - hash_basename(module->BaseDllName.Buffer);
+
+    mark = &hash_map[hash_basename(ntdllW)];
+    found = FALSE;
+    for (entry = mark->Flink; entry != mark; entry = entry->Flink)
+    {
+        module = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, HashLinks);
+        if (!lstrcmpiW(module->BaseDllName.Buffer, ntdllW))
+        {
+            found = TRUE;
+            break;
+        }
+    }
+    ok(found, "Could not find ntdll\n");
+
+    mark = &hash_map[hash_basename(kernel32W)];
+    found = FALSE;
+    for (entry = mark->Flink; entry != mark; entry = entry->Flink)
+    {
+        module = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, HashLinks);
+        if (!lstrcmpiW(module->BaseDllName.Buffer, kernel32W))
+        {
+            found = TRUE;
+            break;
+        }
+    }
+    ok(found, "Could not find kernel32\n");
+}
+
 START_TEST(loader)
 {
     int argc;
@@ -4719,6 +4797,7 @@ START_TEST(loader)
     test_InMemoryOrderModuleList();
     test_LoadPackagedLibrary();
     test_wow64_redirection();
+    test_HashLinks();
     test_dll_file( "ntdll.dll" );
     test_dll_file( "kernel32.dll" );
     test_dll_file( "advapi32.dll" );

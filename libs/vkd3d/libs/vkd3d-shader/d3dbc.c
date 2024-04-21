@@ -541,9 +541,9 @@ static bool add_signature_element(struct vkd3d_shader_sm1_parser *sm1, bool outp
     struct signature_element *element;
 
     if (output)
-        signature = &sm1->p.shader_desc.output_signature;
+        signature = &sm1->p.program.output_signature;
     else
-        signature = &sm1->p.shader_desc.input_signature;
+        signature = &sm1->p.program.input_signature;
 
     if ((element = find_signature_element(signature, name, index)))
     {
@@ -581,9 +581,9 @@ static void add_signature_mask(struct vkd3d_shader_sm1_parser *sm1, bool output,
     struct signature_element *element;
 
     if (output)
-        signature = &sm1->p.shader_desc.output_signature;
+        signature = &sm1->p.program.output_signature;
     else
-        signature = &sm1->p.shader_desc.input_signature;
+        signature = &sm1->p.program.input_signature;
 
     if (!(element = find_signature_element_by_register_index(signature, register_index)))
     {
@@ -886,7 +886,6 @@ static void shader_sm1_destroy(struct vkd3d_shader_parser *parser)
     struct vkd3d_shader_sm1_parser *sm1 = vkd3d_shader_sm1_parser(parser);
 
     vsir_program_cleanup(&parser->program);
-    free_shader_desc(&sm1->p.shader_desc);
     vkd3d_free(sm1);
 }
 
@@ -1237,7 +1236,6 @@ static enum vkd3d_result shader_sm1_init(struct vkd3d_shader_sm1_parser *sm1,
     const struct vkd3d_shader_location location = {.source_name = compile_info->source_name};
     const uint32_t *code = compile_info->source.code;
     size_t code_size = compile_info->source.size;
-    struct vkd3d_shader_desc *shader_desc;
     struct vkd3d_shader_version version;
     uint16_t shader_type;
     size_t token_count;
@@ -1290,9 +1288,6 @@ static enum vkd3d_result shader_sm1_init(struct vkd3d_shader_sm1_parser *sm1,
     if (!vkd3d_shader_parser_init(&sm1->p, message_context, compile_info->source_name, &version, &shader_sm1_parser_ops,
             code_size != ~(size_t)0 ? token_count / 4u + 4 : 16))
         return VKD3D_ERROR_OUT_OF_MEMORY;
-    shader_desc = &sm1->p.shader_desc;
-    shader_desc->byte_code = code;
-    shader_desc->byte_code_size = code_size;
     sm1->ptr = sm1->start;
 
     return VKD3D_OK;
@@ -1363,7 +1358,7 @@ int vkd3d_shader_sm1_parser_create(const struct vkd3d_shader_compile_info *compi
         sm1->p.shader_desc.flat_constant_count[i].external = get_external_constant_count(sm1, i);
 
     if (!sm1->p.failed)
-        ret = vsir_validate(&sm1->p);
+        ret = vkd3d_shader_parser_validate(&sm1->p);
 
     if (sm1->p.failed && ret >= 0)
         ret = VKD3D_ERROR_INVALID_SHADER;
@@ -1499,12 +1494,12 @@ static uint32_t sm1_version(enum vkd3d_shader_type type, unsigned int major, uns
         return D3DPS_VERSION(major, minor);
 }
 
-static D3DXPARAMETER_CLASS sm1_class(const struct hlsl_type *type)
+D3DXPARAMETER_CLASS hlsl_sm1_class(const struct hlsl_type *type)
 {
     switch (type->class)
     {
         case HLSL_CLASS_ARRAY:
-            return sm1_class(type->e.array.type);
+            return hlsl_sm1_class(type->e.array.type);
         case HLSL_CLASS_MATRIX:
             assert(type->modifiers & HLSL_MODIFIERS_MAJORITY_MASK);
             if (type->modifiers & HLSL_MODIFIER_COLUMN_MAJOR)
@@ -1525,65 +1520,96 @@ static D3DXPARAMETER_CLASS sm1_class(const struct hlsl_type *type)
     }
 }
 
-static D3DXPARAMETER_TYPE sm1_base_type(const struct hlsl_type *type)
+D3DXPARAMETER_TYPE hlsl_sm1_base_type(const struct hlsl_type *type)
 {
-    switch (type->base_type)
+    switch (type->class)
     {
-        case HLSL_TYPE_BOOL:
-            return D3DXPT_BOOL;
-        case HLSL_TYPE_FLOAT:
-        case HLSL_TYPE_HALF:
-            return D3DXPT_FLOAT;
-        case HLSL_TYPE_INT:
-        case HLSL_TYPE_UINT:
-            return D3DXPT_INT;
-        case HLSL_TYPE_PIXELSHADER:
-            return D3DXPT_PIXELSHADER;
-        case HLSL_TYPE_SAMPLER:
-            switch (type->sampler_dim)
+        case HLSL_CLASS_SCALAR:
+        case HLSL_CLASS_VECTOR:
+        case HLSL_CLASS_MATRIX:
+            switch (type->base_type)
             {
-                case HLSL_SAMPLER_DIM_1D:
-                    return D3DXPT_SAMPLER1D;
-                case HLSL_SAMPLER_DIM_2D:
-                    return D3DXPT_SAMPLER2D;
-                case HLSL_SAMPLER_DIM_3D:
-                    return D3DXPT_SAMPLER3D;
-                case HLSL_SAMPLER_DIM_CUBE:
-                    return D3DXPT_SAMPLERCUBE;
-                case HLSL_SAMPLER_DIM_GENERIC:
-                    return D3DXPT_SAMPLER;
+                case HLSL_TYPE_BOOL:
+                    return D3DXPT_BOOL;
+                /* Actually double behaves differently depending on DLL version:
+                 * For <= 36, it maps to D3DXPT_FLOAT.
+                 * For 37-40, it maps to zero (D3DXPT_VOID).
+                 * For >= 41, it maps to 39, which is D3D_SVT_DOUBLE (note D3D_SVT_*
+                 *            values are mostly compatible with D3DXPT_*).
+                 * However, the latter two cases look like bugs, and a reasonable
+                 * application certainly wouldn't know what to do with them.
+                 * For fx_2_0 it's always D3DXPT_FLOAT regardless of DLL version. */
+                case HLSL_TYPE_DOUBLE:
+                case HLSL_TYPE_FLOAT:
+                case HLSL_TYPE_HALF:
+                    return D3DXPT_FLOAT;
+                case HLSL_TYPE_INT:
+                case HLSL_TYPE_UINT:
+                    return D3DXPT_INT;
                 default:
-                    ERR("Invalid dimension %#x.\n", type->sampler_dim);
                     vkd3d_unreachable();
             }
-            break;
-        case HLSL_TYPE_STRING:
-            return D3DXPT_STRING;
-        case HLSL_TYPE_TEXTURE:
-            switch (type->sampler_dim)
+
+        case HLSL_CLASS_OBJECT:
+            switch (type->base_type)
             {
-                case HLSL_SAMPLER_DIM_1D:
-                    return D3DXPT_TEXTURE1D;
-                case HLSL_SAMPLER_DIM_2D:
-                    return D3DXPT_TEXTURE2D;
-                case HLSL_SAMPLER_DIM_3D:
-                    return D3DXPT_TEXTURE3D;
-                case HLSL_SAMPLER_DIM_CUBE:
-                    return D3DXPT_TEXTURECUBE;
-                case HLSL_SAMPLER_DIM_GENERIC:
-                    return D3DXPT_TEXTURE;
+                case HLSL_TYPE_PIXELSHADER:
+                    return D3DXPT_PIXELSHADER;
+                case HLSL_TYPE_SAMPLER:
+                    switch (type->sampler_dim)
+                    {
+                        case HLSL_SAMPLER_DIM_1D:
+                            return D3DXPT_SAMPLER1D;
+                        case HLSL_SAMPLER_DIM_2D:
+                            return D3DXPT_SAMPLER2D;
+                        case HLSL_SAMPLER_DIM_3D:
+                            return D3DXPT_SAMPLER3D;
+                        case HLSL_SAMPLER_DIM_CUBE:
+                            return D3DXPT_SAMPLERCUBE;
+                        case HLSL_SAMPLER_DIM_GENERIC:
+                            return D3DXPT_SAMPLER;
+                        default:
+                            ERR("Invalid dimension %#x.\n", type->sampler_dim);
+                            vkd3d_unreachable();
+                    }
+                    break;
+                case HLSL_TYPE_STRING:
+                    return D3DXPT_STRING;
+                case HLSL_TYPE_TEXTURE:
+                    switch (type->sampler_dim)
+                    {
+                        case HLSL_SAMPLER_DIM_1D:
+                            return D3DXPT_TEXTURE1D;
+                        case HLSL_SAMPLER_DIM_2D:
+                            return D3DXPT_TEXTURE2D;
+                        case HLSL_SAMPLER_DIM_3D:
+                            return D3DXPT_TEXTURE3D;
+                        case HLSL_SAMPLER_DIM_CUBE:
+                            return D3DXPT_TEXTURECUBE;
+                        case HLSL_SAMPLER_DIM_GENERIC:
+                            return D3DXPT_TEXTURE;
+                        default:
+                            ERR("Invalid dimension %#x.\n", type->sampler_dim);
+                            vkd3d_unreachable();
+                    }
+                    break;
+                case HLSL_TYPE_VERTEXSHADER:
+                    return D3DXPT_VERTEXSHADER;
+                case HLSL_TYPE_VOID:
+                    return D3DXPT_VOID;
                 default:
-                    ERR("Invalid dimension %#x.\n", type->sampler_dim);
                     vkd3d_unreachable();
             }
-            break;
-        case HLSL_TYPE_VERTEXSHADER:
-            return D3DXPT_VERTEXSHADER;
-        case HLSL_TYPE_VOID:
-            return D3DXPT_VOID;
-        default:
             vkd3d_unreachable();
+
+        case HLSL_CLASS_ARRAY:
+            return hlsl_sm1_base_type(type->e.array.type);
+
+        case HLSL_CLASS_STRUCT:
+            return D3DXPT_VOID;
     }
+
+    vkd3d_unreachable();
 }
 
 static void write_sm1_type(struct vkd3d_bytecode_buffer *buffer, struct hlsl_type *type, unsigned int ctab_start)
@@ -1620,7 +1646,7 @@ static void write_sm1_type(struct vkd3d_bytecode_buffer *buffer, struct hlsl_typ
         }
     }
 
-    type->bytecode_offset = put_u32(buffer, vkd3d_make_u32(sm1_class(type), sm1_base_type(array_type)));
+    type->bytecode_offset = put_u32(buffer, vkd3d_make_u32(hlsl_sm1_class(type), hlsl_sm1_base_type(array_type)));
     put_u32(buffer, vkd3d_make_u32(type->dimy, type->dimx));
     put_u32(buffer, vkd3d_make_u32(array_size, field_count));
     put_u32(buffer, fields_offset);
@@ -1977,14 +2003,11 @@ static void write_sm1_cast(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
             {
                 case HLSL_TYPE_INT:
                 case HLSL_TYPE_UINT:
-                    /* Integers are internally represented as floats, so no change is necessary.*/
+                case HLSL_TYPE_BOOL:
+                    /* Integrals are internally represented as floats, so no change is necessary.*/
                 case HLSL_TYPE_HALF:
                 case HLSL_TYPE_FLOAT:
                     write_sm1_unary_op(ctx, buffer, D3DSIO_MOV, &instr->reg, &arg1->reg, 0, 0);
-                    break;
-
-                case HLSL_TYPE_BOOL:
-                    hlsl_fixme(ctx, &instr->loc, "SM1 cast from bool to float.");
                     break;
 
                 case HLSL_TYPE_DOUBLE:
@@ -2002,7 +2025,10 @@ static void write_sm1_cast(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
             {
                 case HLSL_TYPE_HALF:
                 case HLSL_TYPE_FLOAT:
-                    /* A compilation pass applies a FLOOR operation to casts to int, so no change is necessary. */
+                    /* A compilation pass turns these into FLOOR+REINTERPRET, so we should not
+                     * reach this case unless we are missing something. */
+                    hlsl_fixme(ctx, &instr->loc, "Unlowered SM1 cast from float to integer.");
+                    break;
                 case HLSL_TYPE_INT:
                 case HLSL_TYPE_UINT:
                     write_sm1_unary_op(ctx, buffer, D3DSIO_MOV, &instr->reg, &arg1->reg, 0, 0);
@@ -2066,6 +2092,9 @@ static void write_sm1_semantic_dcl(struct hlsl_ctx *ctx, struct vkd3d_bytecode_b
     uint32_t token, usage_idx;
     D3DDECLUSAGE usage;
     bool ret;
+
+    if ((!output && !var->last_read) || (output && !var->first_write))
+        return;
 
     if (hlsl_sm1_register_from_semantic(ctx, &var->semantic, output, &reg.type, &reg.reg))
     {
@@ -2242,6 +2271,12 @@ static void write_sm1_expr(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
 
     assert(instr->reg.allocated);
 
+    if (expr->op == HLSL_OP1_REINTERPRET)
+    {
+        write_sm1_unary_op(ctx, buffer, D3DSIO_MOV, &instr->reg, &arg1->reg, 0, 0);
+        return;
+    }
+
     if (expr->op == HLSL_OP1_CAST)
     {
         write_sm1_cast(ctx, buffer, instr);
@@ -2329,7 +2364,23 @@ static void write_sm1_expr(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
             }
             break;
 
+        case HLSL_OP2_LOGIC_AND:
+            write_sm1_binary_op(ctx, buffer, D3DSIO_MIN, &instr->reg, &arg1->reg, &arg2->reg);
+            break;
+
+        case HLSL_OP2_LOGIC_OR:
+            write_sm1_binary_op(ctx, buffer, D3DSIO_MAX, &instr->reg, &arg1->reg, &arg2->reg);
+            break;
+
+        case HLSL_OP2_SLT:
+            if (ctx->profile->type == VKD3D_SHADER_TYPE_PIXEL)
+                hlsl_fixme(ctx, &instr->loc, "Lower SLT instructions for pixel shaders.");
+            write_sm1_binary_op(ctx, buffer, D3DSIO_SLT, &instr->reg, &arg1->reg, &arg2->reg);
+            break;
+
         case HLSL_OP3_CMP:
+            if (ctx->profile->type == VKD3D_SHADER_TYPE_VERTEX)
+                hlsl_fixme(ctx, &instr->loc, "Lower CMP instructions for vertex shaders.");
             write_sm1_ternary_op(ctx, buffer, D3DSIO_CMP, &instr->reg, &arg1->reg, &arg2->reg, &arg3->reg);
             break;
 
@@ -2488,7 +2539,7 @@ static void write_sm1_store(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *
 
     if (store->lhs.var->data_type->class == HLSL_CLASS_MATRIX)
     {
-        FIXME("Matrix writemasks need to be lowered.\n");
+        hlsl_fixme(ctx, &instr->loc, "Lower matrix writemasks.\n");
         return;
     }
 
@@ -2552,19 +2603,11 @@ static void write_sm1_instructions(struct hlsl_ctx *ctx, struct vkd3d_bytecode_b
     {
         if (instr->data_type)
         {
-            if (instr->data_type->class == HLSL_CLASS_MATRIX)
+            if (instr->data_type->class != HLSL_CLASS_SCALAR && instr->data_type->class != HLSL_CLASS_VECTOR)
             {
-                /* These need to be lowered. */
-                hlsl_fixme(ctx, &instr->loc, "SM1 matrix expression.");
-                continue;
-            }
-            else if (instr->data_type->class == HLSL_CLASS_OBJECT)
-            {
-                hlsl_fixme(ctx, &instr->loc, "Object copy.");
+                hlsl_fixme(ctx, &instr->loc, "Class %#x should have been lowered or removed.", instr->data_type->class);
                 break;
             }
-
-            assert(instr->data_type->class == HLSL_CLASS_SCALAR || instr->data_type->class == HLSL_CLASS_VECTOR);
         }
 
         switch (instr->type)
