@@ -1,0 +1,28 @@
+# Last wine-tkg-fsync-git configuration - Tue Apr 30 04:28:41 PM CEST 2024 :
+
+Local cfg files used
+
+Wine (plain) version: 9.7.r135.ga27b95511be
+
+Using esync patchset (version ce79346)
+Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
+
+Done applying backports hotfixes (if any) - list available in prepare.log
+Done applying reverting hotfixes (if any) - list available in prepare.log
+
+esync-unix-mainline.patch -- ( Using Esync (unix, mainline) patchset )
+fsync-unix-mainline.patch -- ( Applied fsync patches (unix, mainline) )
+fsync_futex_waitv.patch -- ( Applied patches for fsync to support futex_waitv )
+
+LAA-unix.patch -- ( Applied large address aware override support (legacy) )
+
+josh-flat-theme.patch -- ( Add Josh's better-theme )
+proton_battleye.patch -- ( Add support for Proton's Battleye runtime )
+proton-eac_bridge.patch -- ( Add support for Proton's EAC bridge )
+
+Applied hotfix Return_nt_filename_and_resolve_DOS_drive_path.mypatch
+Applied hotfix a608ef1.mypatch
+Applied hotfix opencl-fixup.mypatch
+Applied hotfix nostale_mouse_fix.mypatch
+
+wine-tkg.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )
