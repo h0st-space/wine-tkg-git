@@ -1247,8 +1247,8 @@ static gboolean src_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
         case GST_QUERY_URI:
             if (parser->uri)
             {
-                GST_LOG_OBJECT(pad, "Responding with %" GST_PTR_FORMAT, query);
                 gst_query_set_uri(query, parser->uri);
+                GST_LOG_OBJECT(pad, "Responding with %" GST_PTR_FORMAT, query);
                 return TRUE;
             }
             return FALSE;
@@ -1900,6 +1900,24 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_wg_funcs_count);
 
 typedef ULONG PTR32;
 
+static NTSTATUS wow64_wg_parser_connect(void *args)
+{
+    struct
+    {
+        wg_parser_t parser;
+        PTR32 uri;
+        UINT64 file_size;
+    } *params32 = args;
+    struct wg_parser_connect_params params =
+    {
+        .parser = params32->parser,
+        .uri = ULongToPtr(params32->uri),
+        .file_size = params32->file_size,
+    };
+
+    return wg_parser_connect(&params);
+}
+
 static NTSTATUS wow64_wg_parser_push_data(void *args) {
     struct
     {
@@ -2184,7 +2202,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     X(wg_parser_create),
     X(wg_parser_destroy),
 
-    X(wg_parser_connect),
+    X64(wg_parser_connect),
     X(wg_parser_disconnect),
 
     X(wg_parser_get_next_read_offset),

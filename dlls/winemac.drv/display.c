@@ -1110,7 +1110,7 @@ static BOOL is_same_devmode(const DEVMODEW *a, const DEVMODEW *b)
            a->dmDisplayFrequency == b->dmDisplayFrequency;
 }
 
-BOOL macdrv_UpdateDisplayDevices( const struct gdi_device_manager *device_manager, BOOL force, void *param )
+UINT macdrv_UpdateDisplayDevices( const struct gdi_device_manager *device_manager, BOOL force, void *param )
 {
     struct macdrv_adapter *adapters, *adapter;
     struct macdrv_monitor *monitors, *monitor;
@@ -1120,7 +1120,7 @@ BOOL macdrv_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
     DEVMODEW *mode, *modes;
     DWORD len;
 
-    if (!force && !force_display_devices_refresh) return TRUE;
+    if (!force && !force_display_devices_refresh) return STATUS_ALREADY_COMPLETE;
     force_display_devices_refresh = FALSE;
 
     if (macdrv_get_displays(&displays, &display_count))
@@ -1133,22 +1133,20 @@ BOOL macdrv_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
     if (macdrv_get_gpus(&gpus, &gpu_count))
     {
         ERR("could not get GPUs\n");
-        return FALSE;
+        return STATUS_UNSUCCESSFUL;
     }
     TRACE("GPU count: %d\n", gpu_count);
 
     for (gpu = gpus; gpu < gpus + gpu_count; gpu++)
     {
-        struct gdi_gpu gdi_gpu =
+        struct pci_id pci_id =
         {
-            .id = gpu->id,
-            .vendor_id = gpu->vendor_id,
-            .device_id = gpu->device_id,
-            .subsys_id = gpu->subsys_id,
-            .revision_id = gpu->revision_id,
+            .vendor = gpu->vendor_id,
+            .device = gpu->device_id,
+            .subsystem = gpu->subsys_id,
+            .revision = gpu->revision_id,
         };
-        RtlUTF8ToUnicodeN(gdi_gpu.name, sizeof(gdi_gpu.name), &len, gpu->name, strlen(gpu->name));
-        device_manager->add_gpu(&gdi_gpu, param);
+        device_manager->add_gpu(gpu->name, &pci_id, NULL, 0, param);
 
         /* Initialize adapters */
         if (macdrv_get_adapters(gpu->id, &adapters, &adapter_count)) break;
@@ -1200,7 +1198,7 @@ BOOL macdrv_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
 
     macdrv_free_gpus(gpus);
     macdrv_free_displays(displays);
-    return TRUE;
+    return STATUS_SUCCESS;
 }
 
 /***********************************************************************
