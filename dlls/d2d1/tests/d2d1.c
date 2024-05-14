@@ -10947,14 +10947,15 @@ static void test_builtin_effect(BOOL d3d11)
     unsigned int i, j, min_inputs, max_inputs, str_size, input_count;
     D2D1_BITMAP_PROPERTIES bitmap_desc;
     D2D1_BUFFER_PRECISION precision;
+    ID2D1Effect *effect, *effect2;
     ID2D1Image *image_a, *image_b;
     struct d2d1_test_context ctx;
     ID2D1DeviceContext *context;
     ID2D1Factory1 *factory;
     ID2D1Bitmap *bitmap;
-    ID2D1Effect *effect;
     D2D1_SIZE_U size;
     BYTE buffer[256];
+    IUnknown *unk;
     BOOL cached;
     CLSID clsid;
     HRESULT hr;
@@ -11009,6 +11010,17 @@ static void test_builtin_effect(BOOL d3d11)
         ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         ID2D1Effect_GetOutput(effect, &image_b);
         ok(image_b == image_a, "Got unexpected image_b %p, expected %p.\n", image_b, image_a);
+
+        hr = ID2D1Image_QueryInterface(image_a, &IID_ID2D1Effect, (void **)&effect2);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+        ok(effect2 == effect, "Unexpected pointer.\n");
+        ID2D1Effect_Release(effect2);
+
+        hr = ID2D1Image_QueryInterface(image_a, &IID_IUnknown, (void **)&unk);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+        ok(unk == (IUnknown *)effect, "Unexpected pointer.\n");
+        IUnknown_Release(unk);
+
         ID2D1Image_Release(image_b);
         ID2D1Image_Release(image_a);
 
@@ -12469,7 +12481,8 @@ static void test_effect_2d_affine(BOOL d3d11)
         }
         ID2D1Effect_GetOutput(effect, &output);
 
-        ID2D1DeviceContext_GetImageLocalBounds(context, output, &output_bounds);
+        hr = ID2D1DeviceContext_GetImageLocalBounds(context, output, &output_bounds);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         todo_wine
         ok(compare_rect(&output_bounds, test->bounds.left, test->bounds.top, test->bounds.right, test->bounds.bottom, 1),
                 "Got unexpected output bounds {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
@@ -12591,7 +12604,9 @@ static void test_effect_crop(BOOL d3d11)
         ID2D1Effect_GetOutput(effect, &output);
 
         set_rect(&output_bounds, -1.0f, -1.0f, -1.0f, -1.0f);
-        ID2D1DeviceContext_GetImageLocalBounds(context, output, &output_bounds);
+        hr = ID2D1DeviceContext_GetImageLocalBounds(context, output, &output_bounds);
+        todo_wine
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         todo_wine
         ok(compare_rect(&output_bounds, test->bounds.left, test->bounds.top, test->bounds.right, test->bounds.bottom, 0),
                 "Got unexpected output bounds {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
@@ -13638,7 +13653,8 @@ static void test_image_bounds(BOOL d3d11)
 
         set_rect(&bounds, 0.0f, 0.0f, 0.0f, 0.0f);
         size = ID2D1Bitmap_GetSize(bitmap);
-        ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        hr = ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         ok(compare_rect(&bounds, 0.0f, 0.0f, size.width, size.height, 0),
                 "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
                 bounds.left, bounds.top, bounds.right, bounds.bottom, 0.0f, 0.0f, size.width, size.height);
@@ -13646,7 +13662,8 @@ static void test_image_bounds(BOOL d3d11)
         /* Test bitmap local bounds after changing context dpi */
         ID2D1DeviceContext_GetDpi(context, &dpi_x, &dpi_y);
         ID2D1DeviceContext_SetDpi(context, dpi_x * 2.0f, dpi_y * 2.0f);
-        ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        hr = ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         ok(compare_rect(&bounds, 0.0f, 0.0f, size.width, size.height, 0),
                 "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
                 bounds.left, bounds.top, bounds.right, bounds.bottom, 0.0f, 0.0f, size.width, size.height);
@@ -13656,7 +13673,8 @@ static void test_image_bounds(BOOL d3d11)
         unit_mode = ID2D1DeviceContext_GetUnitMode(context);
         ok(unit_mode == D2D1_UNIT_MODE_DIPS, "Got unexpected unit mode %#x.\n", unit_mode);
         ID2D1DeviceContext_SetUnitMode(context, D2D1_UNIT_MODE_PIXELS);
-        ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        hr = ID2D1DeviceContext_GetImageLocalBounds(context, (ID2D1Image *)bitmap, &bounds);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
         ok(compare_rect(&bounds, 0.0f, 0.0f, test->pixel_size.width, test->pixel_size.height, 0),
                 "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
                 bounds.left, bounds.top, bounds.right, bounds.bottom, 0.0f, 0.0f,

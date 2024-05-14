@@ -5473,8 +5473,10 @@ struct get_rawinput_buffer_reply
 {
     struct reply_header __header;
     data_size_t next_size;
+    unsigned int time;
     unsigned int count;
     /* VARARG(data,bytes); */
+    char __pad_20[4];
 };
 
 
@@ -6723,7 +6725,7 @@ union generic_reply
 
 /* ### protocol_version begin ### */
 
-#define SERVER_PROTOCOL_VERSION 801
+#define SERVER_PROTOCOL_VERSION 802
 
 /* ### protocol_version end ### */
 

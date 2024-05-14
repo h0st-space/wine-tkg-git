@@ -227,7 +227,6 @@ struct glsl_ps_program
     GLint fog_end_location;
     GLint fog_scale_location;
     GLint alpha_test_ref_location;
-    GLint ycorrection_location;
     GLint np2_fixup_location;
     GLint color_key_location;
     const struct ps_np2fixup_info *np2_fixup_info;
@@ -1916,20 +1915,6 @@ static void shader_glsl_load_constants(struct shader_glsl_priv *priv,
         }
 
         checkGLcall("bump env uniforms");
-    }
-
-    if (update_mask & WINED3D_SHADER_CONST_PS_Y_CORR)
-    {
-        const struct wined3d_vec4 correction_params =
-        {
-            /* Position is relative to the framebuffer, not the viewport. */
-            context->render_offscreen ? 0.0f : (float)state->fb.render_targets[0]->height,
-            context->render_offscreen ? 1.0f : -1.0f,
-            0.0f,
-            0.0f,
-        };
-
-        GL_EXTCALL(glUniform4fv(prog->ps.ycorrection_location, 1, &correction_params.x));
     }
 
     if (update_mask & WINED3D_SHADER_CONST_PS_NP2_FIXUP)
@@ -4236,9 +4221,6 @@ static void shader_glsl_pow(const struct wined3d_shader_instruction *ins)
 /* Map the opcode 1-to-1 to the GL code (arg->dst = instruction(src0, src1, ...) */
 static void shader_glsl_map2gl(const struct wined3d_shader_instruction *ins)
 {
-    const struct shader_glsl_ctx_priv *priv = ins->ctx->backend_data;
-    bool y_correction = ins->ctx->reg_maps->shader_version.type == WINED3D_SHADER_TYPE_PIXEL
-            ? priv->cur_ps_args->y_correction : false;
     struct wined3d_string_buffer *buffer = ins->ctx->buffer;
     struct glsl_src_param src_param;
     const char *instruction;
@@ -4255,9 +4237,9 @@ static void shader_glsl_map2gl(const struct wined3d_shader_instruction *ins)
         case WINED3DSIH_DSX: instruction = "dFdx"; break;
         case WINED3DSIH_DSX_COARSE: instruction = "dFdxCoarse"; break;
         case WINED3DSIH_DSX_FINE: instruction = "dFdxFine"; break;
-        case WINED3DSIH_DSY: instruction = y_correction ? "ycorrection.y * dFdy" : "dFdy"; break;
-        case WINED3DSIH_DSY_COARSE: instruction = y_correction ? "ycorrection.y * dFdyCoarse" : "dFdyCoarse"; break;
-        case WINED3DSIH_DSY_FINE: instruction = y_correction ? "ycorrection.y * dFdyFine" : "dFdyFine"; break;
+        case WINED3DSIH_DSY: instruction = "dFdy"; break;
+        case WINED3DSIH_DSY_COARSE: instruction = "dFdyCoarse"; break;
+        case WINED3DSIH_DSY_FINE: instruction = "dFdyFine"; break;
         case WINED3DSIH_FIRSTBIT_HI: instruction = "findMSB"; break;
         case WINED3DSIH_FIRSTBIT_LO: instruction = "findLSB"; break;
         case WINED3DSIH_FIRSTBIT_SHI: instruction = "findMSB"; break;
@@ -8019,21 +8001,12 @@ static GLuint shader_glsl_generate_fragment_shader(const struct wined3d_context_
         shader_glsl_append_imm_vec(buffer, &wined3d_srgb_const[1].x, 4, gl_info);
         shader_addline(buffer, ";\n");
     }
-    if ((reg_maps->usesdsy && wined3d_settings.offscreen_rendering_mode != ORM_FBO)
-            || (reg_maps->vpos && !gl_info->supported[ARB_FRAGMENT_COORD_CONVENTIONS]))
-    {
-        ++extra_constants_needed;
-        shader_addline(buffer, "uniform vec4 ycorrection;\n");
-    }
     if (reg_maps->vpos)
     {
         if (gl_info->supported[ARB_FRAGMENT_COORD_CONVENTIONS])
         {
             if (context_gl->c.d3d_info->wined3d_creation_flags & WINED3D_PIXEL_CENTER_INTEGER)
-                shader_addline(buffer, "layout(%spixel_center_integer) in vec4 gl_FragCoord;\n",
-                        args->y_correction ? "origin_upper_left, " : "");
-            else if (args->y_correction)
-                shader_addline(buffer, "layout(origin_upper_left) in vec4 gl_FragCoord;\n");
+                shader_addline(buffer, "layout(pixel_center_integer) in vec4 gl_FragCoord;\n");
         }
         shader_addline(buffer, "vec4 vpos;\n");
     }
@@ -8124,14 +8097,11 @@ static GLuint shader_glsl_generate_fragment_shader(const struct wined3d_context_
      * on drivers that returns integer values. */
     if (reg_maps->vpos)
     {
-        if (gl_info->supported[ARB_FRAGMENT_COORD_CONVENTIONS])
-            shader_addline(buffer, "vpos = gl_FragCoord;\n");
-        else if (context_gl->c.d3d_info->wined3d_creation_flags & WINED3D_PIXEL_CENTER_INTEGER)
-            shader_addline(buffer,
-                    "vpos = floor(vec4(0, ycorrection[0], 0, 0) + gl_FragCoord * vec4(1, ycorrection[1], 1, 1));\n");
+        if (!gl_info->supported[ARB_FRAGMENT_COORD_CONVENTIONS]
+                && (context_gl->c.d3d_info->wined3d_creation_flags & WINED3D_PIXEL_CENTER_INTEGER))
+            shader_addline(buffer, "vpos = floor(gl_FragCoord);\n");
         else
-            shader_addline(buffer,
-                    "vpos = vec4(0, ycorrection[0], 0, 0) + gl_FragCoord * vec4(1, ycorrection[1], 1, 1);\n");
+            shader_addline(buffer, "vpos = gl_FragCoord;\n");
     }
 
     if (reg_maps->shader_version.major < 3 || args->vp_mode != WINED3D_VP_MODE_SHADER)
@@ -8518,16 +8488,10 @@ static GLuint shader_glsl_generate_domain_shader(const struct wined3d_context_gl
     switch (args->tessellator_output_primitive)
     {
         case WINED3D_TESSELLATOR_OUTPUT_TRIANGLE_CW:
-            if (args->render_offscreen)
-                shader_addline(buffer, ", ccw");
-            else
-                shader_addline(buffer, ", cw");
+            shader_addline(buffer, ", ccw");
             break;
         case WINED3D_TESSELLATOR_OUTPUT_TRIANGLE_CCW:
-            if (args->render_offscreen)
-                shader_addline(buffer, ", cw");
-            else
-                shader_addline(buffer, ", ccw");
+            shader_addline(buffer, ", cw");
             break;
         case WINED3D_TESSELLATOR_OUTPUT_POINT:
             shader_addline(buffer, ", point_mode");
@@ -10349,7 +10313,6 @@ static void shader_glsl_init_ps_uniform_locations(const struct wined3d_gl_info *
     ps->alpha_test_ref_location = GL_EXTCALL(glGetUniformLocation(program_id, "alpha_test_ref"));
 
     ps->np2_fixup_location = GL_EXTCALL(glGetUniformLocation(program_id, "ps_samplerNP2Fixup"));
-    ps->ycorrection_location = GL_EXTCALL(glGetUniformLocation(program_id, "ycorrection"));
     ps->color_key_location = GL_EXTCALL(glGetUniformLocation(program_id, "color_key"));
 
     string_buffer_release(&priv->string_buffers, name);
@@ -10869,8 +10832,6 @@ static void set_glsl_shader_program(const struct wined3d_context_gl *context_gl,
                 entry->constant_update_mask |= WINED3D_SHADER_CONST_PS_I;
             if (pshader->reg_maps.boolean_constants)
                 entry->constant_update_mask |= WINED3D_SHADER_CONST_PS_B;
-            if (entry->ps.ycorrection_location != -1)
-                entry->constant_update_mask |= WINED3D_SHADER_CONST_PS_Y_CORR;
 
             shader_glsl_load_program_resources(context_gl, priv, program_id, pshader);
             shader_glsl_load_images(gl_info, priv, program_id, &pshader->reg_maps);
@@ -13418,8 +13379,7 @@ static BOOL glsl_blitter_supported(enum wined3d_blit_op blit_op, const struct wi
         return FALSE;
     }
 
-    if (wined3d_settings.offscreen_rendering_mode == ORM_FBO
-            && !((dst_format->caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_FBO_ATTACHABLE)
+    if (!((dst_format->caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_FBO_ATTACHABLE)
             || (dst_resource->bind_flags & WINED3D_BIND_RENDER_TARGET)))
     {
         TRACE("Destination texture is not FBO attachable.\n");
@@ -13449,7 +13409,7 @@ static DWORD glsl_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_bli
     struct wined3d_blitter *next;
     unsigned int src_level;
     GLint location;
-    RECT s, d;
+    RECT d;
 
     TRACE("blitter %p, op %#x, context %p, src_texture %p, src_sub_resource_idx %u, src_location %s, "
             "src_rect %s, dst_texture %p, dst_sub_resource_idx %u, dst_location %s, dst_rect %s, "
@@ -13509,25 +13469,6 @@ static DWORD glsl_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_bli
         src_texture = staging_texture;
         src_texture_gl = wined3d_texture_gl(src_texture);
         src_sub_resource_idx = 0;
-    }
-    else if (wined3d_settings.offscreen_rendering_mode != ORM_FBO
-            && (src_texture->sub_resources[src_sub_resource_idx].locations
-            & (WINED3D_LOCATION_TEXTURE_RGB | WINED3D_LOCATION_DRAWABLE)) == WINED3D_LOCATION_DRAWABLE
-            && !wined3d_resource_is_offscreen(&src_texture->resource))
-    {
-
-        /* Without FBO blits transferring from the drawable to the texture is
-         * expensive, because we have to flip the data in sysmem. Since we can
-         * flip in the blitter, we don't actually need that flip anyway. So we
-         * use the surface's texture as scratch texture, and flip the source
-         * rectangle instead. */
-        texture2d_load_fb_texture(src_texture_gl, src_sub_resource_idx, FALSE, context);
-
-        s = *src_rect;
-        src_level = src_sub_resource_idx % src_texture->level_count;
-        s.top = wined3d_texture_get_level_height(src_texture, src_level) - s.top;
-        s.bottom = wined3d_texture_get_level_height(src_texture, src_level) - s.bottom;
-        src_rect = &s;
     }
     else
     {

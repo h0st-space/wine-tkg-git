@@ -230,7 +230,6 @@ struct wined3d_d3d_info
     uint32_t vs_clipping : 1;
     uint32_t shader_double_precision : 1;
     uint32_t shader_output_interpolation : 1;
-    uint32_t frag_coord_correction : 1;
     uint32_t viewport_array_index_any_shader : 1;
     uint32_t stencil_export : 1;
     uint32_t texture_npot : 1;
@@ -456,9 +455,6 @@ static inline int wined3d_uint64_compare(uint64_t x, uint64_t y)
     return (x > y) - (x < y);
 }
 
-#define ORM_BACKBUFFER  0
-#define ORM_FBO         1
-
 #define PCI_VENDOR_NONE 0xffff /* e.g. 0x8086 for Intel and 0x10de for Nvidia */
 #define PCI_DEVICE_NONE 0xffff /* e.g. 0x14f for a Geforce6200 */
 
@@ -478,7 +474,6 @@ struct wined3d_settings
 {
     unsigned int cs_multithreaded;
     unsigned int max_gl_version;
-    int offscreen_rendering_mode;
     unsigned short pci_vendor_id;
     unsigned short pci_device_id;
     /* Memory tracking and object counting. */
@@ -528,7 +523,6 @@ enum wined3d_shader_resource_type
 #define WINED3D_SHADER_CONST_PS_BUMP_ENV     0x00000200
 #define WINED3D_SHADER_CONST_PS_FOG          0x00000400
 #define WINED3D_SHADER_CONST_PS_ALPHA_TEST   0x00000800
-#define WINED3D_SHADER_CONST_PS_Y_CORR       0x00001000
 #define WINED3D_SHADER_CONST_PS_NP2_FIXUP    0x00002000
 #define WINED3D_SHADER_CONST_FFP_MODELVIEW   0x00004000
 #define WINED3D_SHADER_CONST_FFP_VERTEXBLEND 0x00008000
@@ -1504,10 +1498,9 @@ struct ps_compile_args
     DWORD pointsprite : 1;
     DWORD flatshading : 1;
     DWORD alpha_test_func : 3;
-    DWORD y_correction : 1;
     DWORD rt_alpha_swizzle : 8; /* WINED3D_MAX_RENDER_TARGETS, 8 */
     DWORD dual_source_blend : 1;
-    DWORD padding : 17;
+    DWORD padding : 18;
 };
 
 enum fog_src_type
@@ -1536,8 +1529,7 @@ struct ds_compile_args
     enum wined3d_tessellator_partitioning tessellator_partitioning;
     unsigned int output_count : 16;
     unsigned int next_shader_type : 3;
-    unsigned int render_offscreen : 1;
-    unsigned int padding : 12;
+    unsigned int padding : 13;
     uint32_t interpolation_mode[WINED3D_PACKED_INTERPOLATION_SIZE];
 };
 
@@ -1573,7 +1565,6 @@ struct wined3d_shader_backend_ops
 };
 
 extern const struct wined3d_shader_backend_ops glsl_shader_backend;
-extern const struct wined3d_shader_backend_ops arb_program_shader_backend;
 extern const struct wined3d_shader_backend_ops none_shader_backend;
 
 const struct wined3d_shader_backend_ops *wined3d_spirv_shader_backend_init_vk(void);
@@ -1961,7 +1952,6 @@ struct wined3d_context
     DWORD transform_feedback_active : 1;
     DWORD transform_feedback_paused : 1;
     DWORD fog_coord : 1;
-    DWORD render_offscreen : 1;
     DWORD current : 1;
     DWORD destroyed : 1;
     DWORD destroy_delayed : 1;
@@ -1969,7 +1959,7 @@ struct wined3d_context
     DWORD update_primitive_type : 1;
     DWORD update_patch_vertex_count : 1;
     DWORD update_multisample_state : 1;
-    DWORD padding : 2;
+    DWORD padding : 3;
 
     DWORD clip_distance_mask : 8; /* WINED3D_MAX_CLIP_DISTANCES, 8 */
 
@@ -2053,17 +2043,11 @@ struct wined3d_vertex_pipe_ops
 
 extern const struct wined3d_state_entry_template misc_state_template_gl[];
 extern const struct wined3d_fragment_pipe_ops none_fragment_pipe;
-extern const struct wined3d_fragment_pipe_ops ffp_fragment_pipeline;
-extern const struct wined3d_fragment_pipe_ops atifs_fragment_pipeline;
-extern const struct wined3d_fragment_pipe_ops arbfp_fragment_pipeline;
-extern const struct wined3d_fragment_pipe_ops nvts_fragment_pipeline;
-extern const struct wined3d_fragment_pipe_ops nvrc_fragment_pipeline;
 extern const struct wined3d_fragment_pipe_ops glsl_fragment_pipe;
 
 const struct wined3d_fragment_pipe_ops *wined3d_spirv_fragment_pipe_init_vk(void);
 
 extern const struct wined3d_vertex_pipe_ops none_vertex_pipe;
-extern const struct wined3d_vertex_pipe_ops ffp_vertex_pipe;
 extern const struct wined3d_vertex_pipe_ops glsl_vertex_pipe;
 
 const struct wined3d_vertex_pipe_ops *wined3d_spirv_vertex_pipe_init_vk(void);
@@ -4104,22 +4088,6 @@ void dump_color_fixup_desc(struct color_fixup_desc fixup);
 
 BOOL is_invalid_op(const struct wined3d_state *state, int stage,
         enum wined3d_texture_op op, DWORD arg1, DWORD arg2, DWORD arg3);
-void sampler_texdim(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void tex_alphaop(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void apply_pixelshader(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void state_alpha_test(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void state_fogcolor(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void state_fogdensity(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void state_fogstartend(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
-void state_fog_fragpart(struct wined3d_context *context,
-        const struct wined3d_state *state, DWORD state_id);
 void state_nop(struct wined3d_context *context,
         const struct wined3d_state *state, DWORD state_id);
 void state_srgbwrite(struct wined3d_context *context,
@@ -4407,12 +4375,6 @@ static inline void shader_get_position_fixup(const struct wined3d_context *conte
         }
         position_fixup[4 * i + 2] = (center_offset + x) / state->viewports[i].width;
         position_fixup[4 * i + 3] = -(center_offset + y) / state->viewports[i].height;
-
-        if (context->render_offscreen)
-        {
-            position_fixup[4 * i + 1] *= -1.0f;
-            position_fixup[4 * i + 3] *= -1.0f;
-        }
     }
 }
 
