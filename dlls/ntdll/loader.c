@@ -3129,15 +3129,30 @@ static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
     ULONG len;
 
+    const WCHAR* dll_dir = get_module_path_end(  current_modref->ldr.FullDllName.Buffer);
+    len+= current_modref->ldr.FullDllName.Buffer.Length;
     if (!paths) paths = default_load_path;
     len = wcslen( paths );
 
     if (len < wcslen( system_dir )) len = wcslen( system_dir );
     len += wcslen( search ) + 2;
-
+    len += wcslen()
     if (!(name = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
         return STATUS_NO_MEMORY;
+   
+     ulong mod_path_len = dll_dir - current_modref->ldr.FullDllName.Buffer;
+    memcpy(name,dll_dir,mod_path_len);
+    if (mod_path_len && name[mod_path_len - 1] != '\\') name[mod_path_len++] = '\\';
+    wcscpy( name + mod_path_len, search );
+    
+    nt_name->Buffer = NULL;
+    if ((status = RtlDosPathNameToNtPathName_U_WithStatus( name, nt_name, NULL, NULL ))) goto done;
 
+    status = open_dll_file( nt_name, pwm, mapping, image_info, id );
+    if (status == STATUS_NOT_SUPPORTED) found_image = TRUE;
+    else if (status != STATUS_DLL_NOT_FOUND) goto done;
+    RtlFreeUnicodeString( nt_name );
+    
     while (*paths)
     {
         LPCWSTR ptr = paths;
@@ -3158,7 +3173,8 @@ static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *
         RtlFreeUnicodeString( nt_name );
         paths = ptr;
     }
-
+    
+    
     if (found_image) status = STATUS_NOT_SUPPORTED;
 
 done:
