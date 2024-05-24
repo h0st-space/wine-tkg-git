@@ -615,15 +615,38 @@ static void check_keyboard_state_( int line, const BYTE expect_state[256], const
     }
 }
 
+static void clear_keyboard_state( void )
+{
+    static BYTE empty_state[256] = {0};
+    INPUT input = {.type = INPUT_KEYBOARD};
+    BYTE lock_keys[] = {VK_NUMLOCK, VK_CAPITAL, VK_SCROLL};
+    UINT i;
+
+    for (i = 0; i < ARRAY_SIZE(lock_keys); ++i)
+    {
+        if (GetKeyState( lock_keys[i] ) & 0x0001)
+        {
+            input.ki.wVk = lock_keys[i];
+            SendInput( 1, &input, sizeof(input) );
+            input.ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput( 1, &input, sizeof(input) );
+            wait_messages( 5, FALSE );
+            memset( current_sequence, 0, sizeof(current_sequence) );
+            current_sequence_len = 0;
+        }
+    }
+
+    SetKeyboardState( empty_state );
+}
+
 #define check_send_input_keyboard_test( a, b ) check_send_input_keyboard_test_( a, #a, b )
 static void check_send_input_keyboard_test_( const struct send_input_keyboard_test *test, const char *context, BOOL peeked )
 {
-    static BYTE empty_state[256] = {0};
     INPUT input = {.type = INPUT_KEYBOARD};
     UINT i;
 
     winetest_push_context( "%s", context );
-    SetKeyboardState( empty_state );
+    clear_keyboard_state();
 
     for (i = 0; test->vkey || test->scan; i++, test++)
     {
@@ -641,7 +664,7 @@ static void check_send_input_keyboard_test_( const struct send_input_keyboard_te
         winetest_pop_context();
     }
 
-    SetKeyboardState( empty_state );
+    clear_keyboard_state();
     winetest_pop_context();
 }
 
@@ -705,16 +728,9 @@ static void get_test_scan( WORD vkey, WORD *scan, WCHAR *wch, WCHAR *wch_shift )
     ok_ret( 1, ToUnicodeEx( vkey, *scan, state, wch, 1, 0, hkl ) );
     state[VK_SHIFT] = 0x80;
     ok_ret( 1, ToUnicodeEx( vkey, *scan, state, wch_shift, 1, 0, hkl ) );
-
-    /* zh_CN returns a different WM_(SYS)CHAR, possibly coming from IME */
-    if (HIWORD(hkl) == 0x0804)
-    {
-        *wch = 0x430;
-        *wch_shift = 0x410;
-    }
 }
 
-static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, WCHAR wch_shift, WCHAR wch_control )
+static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, WCHAR wch_shift, WCHAR wch_control, HKL hkl )
 {
 #define WIN_MSG(m, w, l, ...) {.func = MSG_TEST_WIN, .message = {.msg = m, .wparam = w, .lparam = l}, ## __VA_ARGS__}
 #define KBD_HOOK(m, s, v, f, ...) {.func = LL_HOOK_KEYBD, .ll_hook_kbd = {.msg = m, .scan = s, .vkey = v, .flags = f}, ## __VA_ARGS__}
@@ -1070,16 +1086,26 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     struct send_input_keyboard_test rshift_scan[] =
     {
         {.scan = 0x36, .flags = KEYEVENTF_SCANCODE, .expect_state = {[VK_SHIFT] = 0x80, [VK_LSHIFT] = 0x80},
-         .todo_state = {[0] = TRUE, [VK_SHIFT] = TRUE, [VK_LSHIFT] = TRUE},
-         .expect = {KEY_HOOK(WM_KEYDOWN, 0x36, VK_RSHIFT, .todo_value = TRUE), KEY_MSG(WM_KEYDOWN, 0x36, VK_SHIFT, .todo_value = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYDOWN, 0x36, VK_RSHIFT), KEY_MSG(WM_KEYDOWN, 0x36, VK_SHIFT), {0}}},
         {.scan = scan, .flags = KEYEVENTF_SCANCODE, .expect_state = {[VK_SHIFT] = 0x80, [VK_LSHIFT] = 0x80, /*[vkey] = 0x80*/},
-         .todo_state = {[0] = TRUE, [VK_SHIFT] = TRUE, [VK_LSHIFT] = TRUE, /*[vkey] = TRUE*/},
-         .expect = {KEY_HOOK(WM_KEYDOWN, scan, vkey, .todo_value = TRUE), KEY_MSG(WM_KEYDOWN, scan, vkey, .todo_value = TRUE), WIN_MSG(WM_CHAR, wch_shift, MAKELONG(1, scan), .todo = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYDOWN, scan, vkey), KEY_MSG(WM_KEYDOWN, scan, vkey), WIN_MSG(WM_CHAR, wch_shift, MAKELONG(1, scan)), {0}}},
         {.scan = scan, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, .expect_state = {[VK_SHIFT] = 0x80, [VK_LSHIFT] = 0x80},
-         .todo_state = {[VK_SHIFT] = TRUE, [VK_LSHIFT] = TRUE},
-         .expect = {KEY_HOOK(WM_KEYUP, scan, vkey, .todo_value = TRUE), KEY_MSG(WM_KEYUP, scan, vkey, .todo_value = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYUP, scan, vkey), KEY_MSG(WM_KEYUP, scan, vkey), {0}}},
         {.scan = 0x36, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
-         .expect = {KEY_HOOK(WM_KEYUP, 0x36, VK_RSHIFT, .todo_value = TRUE), KEY_MSG(WM_KEYUP, 0x36, VK_SHIFT, .todo_value = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYUP, 0x36, VK_RSHIFT), KEY_MSG(WM_KEYUP, 0x36, VK_SHIFT), {0}}},
+        {0},
+    };
+
+    struct send_input_keyboard_test rctrl_scan[] =
+    {
+        {.scan = 0xe01d, .flags = KEYEVENTF_SCANCODE, .expect_state = {[VK_CONTROL] = 0x80, [VK_LCONTROL] = 0x80},
+         .expect = {KEY_HOOK(WM_KEYDOWN, 0x1d, VK_LCONTROL), KEY_MSG(WM_KEYDOWN, 0x1d, VK_CONTROL), {0}}},
+        {.scan = 0xe01d, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+         .expect = {KEY_HOOK(WM_KEYUP, 0x1d, VK_LCONTROL), KEY_MSG(WM_KEYUP, 0x1d, VK_CONTROL), {0}}},
+        {.scan = 0x1d, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, .expect_state = {[VK_CONTROL] = 0x80, [VK_RCONTROL] = 0x80},
+         .expect = {KEY_HOOK_(WM_KEYDOWN, 0x1d, VK_RCONTROL, LLKHF_EXTENDED, .todo_value = TRUE), KEY_MSG(WM_KEYDOWN, 0x11d, VK_CONTROL), {0}}},
+        {.scan = 0x1d, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
+         .expect = {KEY_HOOK_(WM_KEYUP, 0x1d, VK_RCONTROL, LLKHF_EXTENDED, .todo_value = TRUE), KEY_MSG(WM_KEYUP, 0x11d, VK_CONTROL), {0}}},
         {0},
     };
 
@@ -1137,9 +1163,48 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     struct send_input_keyboard_test unicode_vkey[] =
     {
         {.scan = 0x3c0, .vkey = vkey, .flags = KEYEVENTF_UNICODE, .expect_state = {/*[vkey] = 0x80*/},
-         .expect = {KEY_HOOK(WM_KEYDOWN, 0xc0, vkey, .todo_value = TRUE), KEY_MSG(WM_KEYDOWN, 0xc0, vkey, .todo_value = TRUE), WIN_MSG(WM_CHAR, wch, MAKELONG(1, 0xc0), .todo_value = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYDOWN, 0xc0, vkey), KEY_MSG(WM_KEYDOWN, 0xc0, vkey), WIN_MSG(WM_CHAR, wch, MAKELONG(1, 0xc0)), {0}}},
         {.scan = 0x3c0, .vkey = vkey, .flags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-         .expect = {KEY_HOOK(WM_KEYUP, 0xc0, vkey, .todo_value = TRUE), KEY_MSG(WM_KEYUP, 0xc0, vkey, .todo_value = TRUE), {0}}},
+         .expect = {KEY_HOOK(WM_KEYUP, 0xc0, vkey), KEY_MSG(WM_KEYUP, 0xc0, vkey), {0}}},
+        {0},
+    };
+
+    struct send_input_keyboard_test numpad_scan[] =
+    {
+        {.scan = 0x4b, .flags = KEYEVENTF_SCANCODE, .expect_state = {[VK_LEFT] = 0x80},
+         .expect = {KEY_HOOK(WM_KEYDOWN, 0x4b, VK_LEFT), KEY_MSG(WM_KEYDOWN, 0x4b, VK_LEFT), {0}}},
+        {.scan = 0x4b, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+         .expect = {KEY_HOOK(WM_KEYUP, 0x4b, VK_LEFT), KEY_MSG(WM_KEYUP, 0x4b, VK_LEFT), {0}}},
+        {0},
+    };
+
+    struct send_input_keyboard_test numpad_scan_numlock[] =
+    {
+        {.scan = 0x45, .flags = KEYEVENTF_SCANCODE, .expect_state = {[VK_NUMLOCK] = 0x80},
+         .expect = {KEY_HOOK(WM_KEYDOWN, 0x45, VK_NUMLOCK), KEY_MSG(WM_KEYDOWN, 0x45, VK_NUMLOCK), {0}}},
+        {.scan = 0x45, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, .expect_state = {[VK_NUMLOCK] = 0x01},
+         .expect = {KEY_HOOK(WM_KEYUP, 0x45, VK_NUMLOCK), KEY_MSG(WM_KEYUP, 0x45, VK_NUMLOCK), {0}}},
+        {
+            .scan = 0x4b, .flags = KEYEVENTF_SCANCODE,
+            .expect_state = {[VK_NUMPAD4] = 0x80, [VK_NUMLOCK] = 0x01},
+            .todo_state = {[VK_NUMPAD4] = TRUE, [VK_LEFT] = TRUE},
+            .expect =
+            {
+                KEY_HOOK(WM_KEYDOWN, 0x4b, VK_NUMPAD4, .todo_value = TRUE),
+                KEY_MSG(WM_KEYDOWN, 0x4b, VK_NUMPAD4, .todo_value = TRUE),
+                WIN_MSG(WM_CHAR, '4', MAKELONG(1, 0x4b), .todo_value = TRUE),
+                {0}
+            }
+        },
+        {
+            .scan = 0x4b, .flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, .expect_state = {[VK_NUMLOCK] = 0x01},
+            .expect =
+            {
+                KEY_HOOK(WM_KEYUP, 0x4b, VK_NUMPAD4, .todo_value = TRUE),
+                KEY_MSG(WM_KEYUP, 0x4b, VK_NUMPAD4, .todo_value = TRUE),
+                {0}
+            }
+        },
         {0},
     };
 
@@ -1163,6 +1228,17 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     ok_ne( NULL, hwnd, HWND, "%p" );
     wait_messages( 100, FALSE );
 
+    /* If we have had a spurious layout change, wch(_shift) may be incorrect. */
+    if (GetKeyboardLayout( 0 ) != hkl)
+    {
+        win_skip( "Spurious keyboard layout changed detected (expected: %p got: %p)\n",
+                  hkl, GetKeyboardLayout( 0 ) );
+        ok_ret( 1, DestroyWindow( hwnd ) );
+        wait_messages( 100, FALSE );
+        ok_seq( empty_sequence );
+        return;
+    }
+
     hook = SetWindowsHookExW( WH_KEYBOARD_LL, ll_hook_kbd_proc, GetModuleHandleW( NULL ), 0 );
     ok_ne( NULL, hook, HHOOK, "%p" );
 
@@ -1175,7 +1251,6 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     lmenu_lcontrol_vkey[2].expect_state[vkey] = 0x80;
     shift_vkey[1].expect_state[vkey] = 0x80;
     rshift_scan[1].expect_state[vkey] = 0x80;
-    rshift_scan[1].todo_state[vkey] = TRUE;
     unicode_vkey[0].expect_state[vkey] = 0x80;
 
     /* test peeked messages */
@@ -1207,9 +1282,14 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     else check_send_input_keyboard_test( menu_ext_peeked, TRUE );
     check_send_input_keyboard_test( lrshift_ext, TRUE );
     check_send_input_keyboard_test( rshift_scan, TRUE );
+    /* Skip on Korean layouts since they map the right control key to VK_HANJA */
+    if (hkl == (HKL)0x04120412) skip( "skipping rctrl_scan test on Korean layout" );
+    else check_send_input_keyboard_test( rctrl_scan, TRUE );
     check_send_input_keyboard_test( unicode, TRUE );
     check_send_input_keyboard_test( lmenu_unicode_peeked, TRUE );
     check_send_input_keyboard_test( unicode_vkey, TRUE );
+    check_send_input_keyboard_test( numpad_scan, TRUE );
+    check_send_input_keyboard_test( numpad_scan_numlock, TRUE );
     winetest_pop_context();
 
     wait_messages( 100, FALSE );
@@ -1247,9 +1327,14 @@ static void test_SendInput_keyboard_messages( WORD vkey, WORD scan, WCHAR wch, W
     else check_send_input_keyboard_test( menu_ext, FALSE );
     check_send_input_keyboard_test( lrshift_ext, FALSE );
     check_send_input_keyboard_test( rshift_scan, FALSE );
+    /* Skip on Korean layouts since they map the right control key to VK_HANJA */
+    if (hkl == (HKL)0x04120412) skip( "skipping rctrl_scan test on Korean layout" );
+    else check_send_input_keyboard_test( rctrl_scan, FALSE );
     check_send_input_keyboard_test( unicode, FALSE );
     check_send_input_keyboard_test( lmenu_unicode, FALSE );
     check_send_input_keyboard_test( unicode_vkey, FALSE );
+    check_send_input_keyboard_test( numpad_scan, FALSE );
+    check_send_input_keyboard_test( numpad_scan_numlock, FALSE );
     winetest_pop_context();
 
     ok_ret( 1, DestroyWindow( hwnd ) );
@@ -4918,7 +5003,7 @@ static void test_UnregisterDeviceNotification(void)
     ok(ret == FALSE, "Unregistering NULL Device Notification returned: %d\n", ret);
 }
 
-static void test_SendInput( WORD vkey, WCHAR wch )
+static void test_SendInput( WORD vkey, WCHAR wch, HKL hkl )
 {
     const struct user_call broken_sequence[] =
     {
@@ -4935,6 +5020,17 @@ static void test_SendInput( WORD vkey, WCHAR wch )
     hwnd = CreateWindowW( L"static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 100, 100, NULL, NULL, NULL, NULL );
     ok_ne( NULL, hwnd, HWND, "%p" );
     wait_messages( 100, FALSE );
+
+    /* If we have had a spurious layout change, wch may be incorrect. */
+    if (GetKeyboardLayout( 0 ) != hkl)
+    {
+        win_skip( "Spurious keyboard layout changed detected (expected: %p got: %p)\n",
+                  hkl, GetKeyboardLayout( 0 ) );
+        ok_ret( 1, DestroyWindow( hwnd ) );
+        wait_messages( 100, FALSE );
+        ok_seq( empty_sequence );
+        return;
+    }
 
     SetLastError( 0xdeadbeef );
     ok_ret( 0, SendInput( 0, NULL, 0 ) );
@@ -5649,7 +5745,7 @@ static void test_keyboard_ll_hook_blocking(void)
     ok_ret( 1, DestroyWindow( hwnd ) );
 }
 
-static void test_LoadKeyboardLayoutEx(void)
+static void test_LoadKeyboardLayoutEx( HKL orig_hkl )
 {
     static const WCHAR test_layout_name[] = L"00000429";
     static const HKL test_hkl = (HKL)0x04290429;
@@ -5660,6 +5756,16 @@ static void test_LoadKeyboardLayoutEx(void)
 
     old_hkl = GetKeyboardLayout( 0 );
     ok_ne( 0, old_hkl, HKL, "%p" );
+
+    /* If we are dealing with a testbot setup that is prone to spurious
+     * layout changes, layout activations in this test are likely to
+     * not have the expected effect, invalidating the test assumptions. */
+    if (orig_hkl != old_hkl)
+    {
+        win_skip( "Spurious keyboard layout changed detected (expected: %p got: %p)\n",
+                  orig_hkl, old_hkl );
+        return;
+    }
 
     hkl = pLoadKeyboardLayoutEx( NULL, test_layout_name, 0 );
     ok_eq( 0, hkl, HKL, "%p" );
@@ -5758,8 +5864,8 @@ static void test_input_desktop( char **argv )
     test_SetCursorPos();
 
     get_test_scan( 'F', &scan, &wch, &wch_shift );
-    test_SendInput( 'F', wch );
-    test_SendInput_keyboard_messages( 'F', scan, wch, wch_shift, '\x06' );
+    test_SendInput( 'F', wch, hkl );
+    test_SendInput_keyboard_messages( 'F', scan, wch, wch_shift, '\x06', hkl );
     test_SendInput_mouse_messages();
 
     test_keyboard_ll_hook_blocking();
@@ -5768,7 +5874,7 @@ static void test_input_desktop( char **argv )
     test_GetRawInputData();
     test_GetRawInputBuffer();
 
-    test_LoadKeyboardLayoutEx();
+    test_LoadKeyboardLayoutEx( hkl );
 
     ok_ret( 1, SetCursorPos( pos.x, pos.y ) );
 }

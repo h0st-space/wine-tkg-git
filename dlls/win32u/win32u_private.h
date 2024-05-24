@@ -108,6 +108,7 @@ extern void update_mouse_tracking_info( HWND hwnd );
 extern BOOL get_clip_cursor( RECT *rect );
 extern BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset );
 extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset );
+extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout );
 
 /* menu.c */
 extern HMENU create_menu( BOOL is_popup );
@@ -190,6 +191,18 @@ extern BOOL update_display_cache( BOOL force );
 extern void user_lock(void);
 extern void user_unlock(void);
 extern void user_check_not_lock(void);
+
+struct vulkan_gpu
+{
+    struct list entry;
+    struct pci_id pci_id;
+    char *name;
+    GUID uuid;
+    ULONGLONG memory;
+};
+
+extern BOOL get_vulkan_gpus( struct list *gpus );
+extern void free_vulkan_gpu( struct vulkan_gpu *gpu );
 extern BOOL get_vulkan_uuid_from_luid( const LUID *luid, GUID *uuid );
 
 /* winstation.c */

@@ -49,6 +49,8 @@
 #define GIF_DISPOSE_RESTORE_TO_BKGND 2
 #define GIF_DISPOSE_RESTORE_TO_PREV 3
 
+#define PIXELFORMATBPP(x) ((x) ? ((x) >> 8) & 255 : 24)
+
 
 COLORREF ARGB2COLORREF(ARGB color);
 HBITMAP ARGB2BMP(ARGB color);
@@ -136,6 +138,8 @@ extern void get_font_hfont(GpGraphics *graphics, GDIPCONST GpFont *font,
 extern void free_installed_fonts(void);
 
 extern BOOL lengthen_path(GpPath *path, INT len);
+
+extern GpStatus widen_flat_path_anchors(GpPath *flat_path, GpPen *pen, REAL pen_width, GpPath **anchors);
 
 extern DWORD write_region_data(const GpRegion *region, void *data);
 extern DWORD write_path_data(GpPath *path, void *data);
@@ -465,8 +469,6 @@ struct GpBitmap{
     PixelFormat format;
     ImageLockMode lockmode;
     BYTE *bitmapbits;   /* pointer to the buffer we passed in BitmapLockBits */
-    HBITMAP hbitmap;
-    HDC hdc;
     BYTE *bits; /* actual image bits if this is a DIB */
     INT stride; /* stride of bits if this is a DIB */
     BYTE *own_bits; /* image bits that need to be freed with this object */
@@ -663,7 +665,7 @@ static inline void image_unlock(GpImage *image)
 
 static inline BOOL has_gdi_dc(GpGraphics *graphics)
 {
-    return graphics->hdc != NULL;
+    return graphics->hdc != NULL || graphics->owndc;
 }
 
 static inline void set_rect(GpRectF *rect, REAL x, REAL y, REAL width, REAL height)

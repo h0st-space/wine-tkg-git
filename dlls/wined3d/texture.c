@@ -58,8 +58,7 @@ bool wined3d_texture_validate_sub_resource_idx(const struct wined3d_texture *tex
 
 BOOL wined3d_texture_can_use_pbo(const struct wined3d_texture *texture, const struct wined3d_d3d_info *d3d_info)
 {
-    if (!d3d_info->pbo || texture->resource.format->conv_byte_count || texture->resource.pin_sysmem
-            || (texture->flags & WINED3D_TEXTURE_COND_NP2_EMULATED))
+    if (!d3d_info->pbo || texture->resource.format->conv_byte_count || texture->resource.pin_sysmem)
         return FALSE;
 
     return TRUE;
@@ -181,8 +180,8 @@ void texture2d_get_blt_info(const struct wined3d_texture_gl *texture_gl,
     GLsizei w, h;
 
     level = sub_resource_idx % texture_gl->t.level_count;
-    w = wined3d_texture_get_level_pow2_width(&texture_gl->t, level);
-    h = wined3d_texture_get_level_pow2_height(&texture_gl->t, level);
+    w = wined3d_texture_get_level_width(&texture_gl->t, level);
+    h = wined3d_texture_get_level_height(&texture_gl->t, level);
     target = wined3d_texture_gl_get_sub_resource_target(texture_gl, sub_resource_idx);
 
     switch (target)
@@ -207,14 +206,6 @@ void texture2d_get_blt_info(const struct wined3d_texture_gl *texture_gl,
             coords[3].x = (float)rect->right / w;
             coords[3].y = (float)rect->bottom / h;
             coords[3].z = 0.0f;
-            break;
-
-        case GL_TEXTURE_RECTANGLE_ARB:
-            info->bind_target = GL_TEXTURE_RECTANGLE_ARB;
-            coords[0].x = rect->left;  coords[0].y = rect->top;    coords[0].z = 0.0f;
-            coords[1].x = rect->right; coords[1].y = rect->top;    coords[1].z = 0.0f;
-            coords[2].x = rect->left;  coords[2].y = rect->bottom; coords[2].z = 0.0f;
-            coords[3].x = rect->right; coords[3].y = rect->bottom; coords[3].z = 0.0f;
             break;
 
         case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
@@ -1005,8 +996,8 @@ static void wined3d_texture_gl_allocate_mutable_storage(struct wined3d_texture_g
 
         for (level = 0; level < level_count; ++level)
         {
-            width = wined3d_texture_get_level_pow2_width(&texture_gl->t, level);
-            height = wined3d_texture_get_level_pow2_height(&texture_gl->t, level);
+            width = wined3d_texture_get_level_width(&texture_gl->t, level);
+            height = wined3d_texture_get_level_height(&texture_gl->t, level);
             if (texture_gl->t.resource.format_attrs & WINED3D_FORMAT_ATTR_HEIGHT_SCALE)
             {
                 height *= format->f.height_scale.numerator;
@@ -1046,10 +1037,10 @@ static void wined3d_texture_gl_allocate_immutable_storage(struct wined3d_texture
         GLenum gl_internal_format, const struct wined3d_gl_info *gl_info)
 {
     unsigned int samples = wined3d_resource_get_sample_count(&texture_gl->t.resource);
-    GLsizei height = wined3d_texture_get_level_pow2_height(&texture_gl->t, 0);
-    GLsizei width = wined3d_texture_get_level_pow2_width(&texture_gl->t, 0);
     GLboolean standard_pattern = texture_gl->t.resource.multisample_type != WINED3D_MULTISAMPLE_NON_MASKABLE
             && texture_gl->t.resource.multisample_quality == WINED3D_STANDARD_MULTISAMPLE_PATTERN;
+    GLsizei height = wined3d_texture_get_level_height(&texture_gl->t, 0);
+    GLsizei width = wined3d_texture_get_level_width(&texture_gl->t, 0);
 
     switch (texture_gl->target)
     {
@@ -1354,17 +1345,10 @@ GLuint wined3d_texture_gl_prepare_gl_texture(struct wined3d_texture_gl *texture_
     wined3d_context_gl_bind_texture(context_gl, target, gl_tex->name);
 
     /* For a new texture we have to set the texture levels after binding the
-     * texture. Beware that texture rectangles do not support mipmapping, but
-     * set the maxmiplevel if we're relying on the partial
-     * GL_ARB_texture_non_power_of_two emulation with texture rectangles.
-     * (I.e., do not care about cond_np2 here, just look for
-     * GL_TEXTURE_RECTANGLE_ARB.) */
-    if (target != GL_TEXTURE_RECTANGLE_ARB)
-    {
-        TRACE("Setting GL_TEXTURE_MAX_LEVEL to %u.\n", texture_gl->t.level_count - 1);
-        gl_info->gl_ops.gl.p_glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, texture_gl->t.level_count - 1);
-        checkGLcall("glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, texture->level_count)");
-    }
+     * texture. */
+    TRACE("Setting GL_TEXTURE_MAX_LEVEL to %u.\n", texture_gl->t.level_count - 1);
+    gl_info->gl_ops.gl.p_glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, texture_gl->t.level_count - 1);
+    checkGLcall("glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, texture->level_count)");
 
     if (target == GL_TEXTURE_CUBE_MAP_ARB)
     {
@@ -1419,21 +1403,6 @@ GLuint wined3d_texture_gl_prepare_gl_texture(struct wined3d_texture_gl *texture_
 void wined3d_texture_gl_bind_and_dirtify(struct wined3d_texture_gl *texture_gl,
         struct wined3d_context_gl *context_gl, BOOL srgb)
 {
-    /* We don't need a specific texture unit, but after binding the texture
-     * the current unit is dirty. Read the unit back instead of switching to
-     * 0, this avoids messing around with the state manager's GL states. The
-     * current texture unit should always be a valid one.
-     *
-     * To be more specific, this is tricky because we can implicitly be
-     * called from sampler() in state.c. This means we can't touch anything
-     * other than whatever happens to be the currently active texture, or we
-     * would risk marking already applied sampler states dirty again. */
-    if (context_gl->active_texture < ARRAY_SIZE(context_gl->rev_tex_unit_map))
-    {
-        unsigned int active_sampler = context_gl->rev_tex_unit_map[context_gl->active_texture];
-        if (active_sampler != WINED3D_UNMAPPED_STAGE)
-            context_invalidate_state(&context_gl->c, STATE_SAMPLER(active_sampler));
-    }
     /* FIXME: Ideally we'd only do this when touching a binding that's used by
      * a shader. */
     context_invalidate_compute_state(&context_gl->c, STATE_COMPUTE_SHADER_RESOURCE_BINDING);
@@ -1862,17 +1831,17 @@ void wined3d_texture_gl_set_compatible_renderbuffer(struct wined3d_texture_gl *t
         rt_texture = wined3d_texture_from_resource(rt->resource);
         rt_level = rt->sub_resource_idx % rt_texture->level_count;
 
-        width = wined3d_texture_get_level_pow2_width(rt_texture, rt_level);
-        height = wined3d_texture_get_level_pow2_height(rt_texture, rt_level);
+        width = wined3d_texture_get_level_width(rt_texture, rt_level);
+        height = wined3d_texture_get_level_height(rt_texture, rt_level);
     }
     else
     {
-        width = wined3d_texture_get_level_pow2_width(&texture_gl->t, level);
-        height = wined3d_texture_get_level_pow2_height(&texture_gl->t, level);
+        width = wined3d_texture_get_level_width(&texture_gl->t, level);
+        height = wined3d_texture_get_level_height(&texture_gl->t, level);
     }
 
-    src_width = wined3d_texture_get_level_pow2_width(&texture_gl->t, level);
-    src_height = wined3d_texture_get_level_pow2_height(&texture_gl->t, level);
+    src_width = wined3d_texture_get_level_width(&texture_gl->t, level);
+    src_height = wined3d_texture_get_level_height(&texture_gl->t, level);
 
     /* A depth stencil smaller than the render target is not valid */
     if (width > src_width || height > src_height)
@@ -2643,10 +2612,6 @@ static void wined3d_texture_gl_download_data_slow_path(struct wined3d_texture_gl
             return;
         }
 
-        /* NP2 emulation is not allowed on array textures. */
-        if (texture_gl->t.flags & WINED3D_TEXTURE_COND_NP2_EMULATED)
-            ERR("Array texture %p uses NP2 emulation.\n", texture_gl);
-
         WARN_(d3d_perf)("Downloading all miplevel layers to get the data for a single sub-resource.\n");
 
         if (!(temporary_mem = calloc(texture_gl->t.layer_count, sub_resource->size)))
@@ -2654,31 +2619,6 @@ static void wined3d_texture_gl_download_data_slow_path(struct wined3d_texture_gl
             ERR("Out of memory.\n");
             return;
         }
-    }
-
-    if (texture_gl->t.flags & WINED3D_TEXTURE_COND_NP2_EMULATED)
-    {
-        if (format_gl->f.download)
-        {
-            FIXME("Reading back converted texture %p with NP2 emulation is not supported.\n", texture_gl);
-            return;
-        }
-
-        wined3d_texture_get_pitch(&texture_gl->t, level, &dst_row_pitch, &dst_slice_pitch);
-        wined3d_format_calculate_pitch(&format_gl->f, texture_gl->t.resource.device->surface_alignment,
-                wined3d_texture_get_level_pow2_width(&texture_gl->t, level),
-                wined3d_texture_get_level_pow2_height(&texture_gl->t, level),
-                &src_row_pitch, &src_slice_pitch);
-        if (!(temporary_mem = malloc(src_slice_pitch)))
-        {
-            ERR("Out of memory.\n");
-            return;
-        }
-
-        if (bo)
-            ERR("NP2 emulated texture uses PBO unexpectedly.\n");
-        if (texture_gl->t.resource.format_attrs & WINED3D_FORMAT_ATTR_COMPRESSED)
-            ERR("Unexpected compressed format for NP2 emulated texture.\n");
     }
 
     if (format_gl->f.download)
@@ -2747,71 +2687,6 @@ static void wined3d_texture_gl_download_data_slow_path(struct wined3d_texture_gl
         format_gl->f.download(mem, data->addr, src_row_pitch, src_slice_pitch, dst_row_pitch, dst_slice_pitch,
                 wined3d_texture_get_level_width(&texture_gl->t, level),
                 wined3d_texture_get_level_height(&texture_gl->t, level), 1);
-    }
-    else if (texture_gl->t.flags & WINED3D_TEXTURE_COND_NP2_EMULATED)
-    {
-        const BYTE *src_data;
-        unsigned int h, y;
-        BYTE *dst_data;
-        /* Some games (e.g. Warhammer 40,000) don't properly handle texture
-         * pitches, preventing us from using the texture pitch to box NPOT
-         * textures. Instead, we repack the texture's CPU copy so that its
-         * pitch equals bpp * width instead of bpp * pow2width.
-         *
-         * Instead of boxing the texture:
-         *
-         * │<── texture width ──>│ pow2 width ──>│
-         * ├─────────────────────┼───────────────┼─
-         * │111111111111111111111│               │ʌ
-         * │222222222222222222222│               ││
-         * │333333333333333333333│    padding    │texture height
-         * │444444444444444444444│               ││
-         * │555555555555555555555│               │v
-         * ├─────────────────────┘               ├─
-         * │                                     │pow2 height
-         * │       padding            padding    ││
-         * │                                     │v
-         * └─────────────────────────────────────┴─
-         *
-         * we're repacking the data to the expected texture width
-         *
-         * │<── texture width ──>│ pow2 width ──>│
-         * ├─────────────────────┴───────────────┼─
-         * │1111111111111111111112222222222222222│ʌ
-         * │2222233333333333333333333344444444444││
-         * │4444444444555555555555555555555      │texture height
-         * │                                     ││
-         * │        padding       padding        │v
-         * │                                     ├─
-         * │                                     │pow2 height
-         * │        padding       padding        ││
-         * │                                     │v
-         * └─────────────────────────────────────┴─
-         *
-         * == is the same as
-         *
-         * │<── texture width ──>│
-         * ├─────────────────────┼─
-         * │111111111111111111111│ʌ
-         * │222222222222222222222││
-         * │333333333333333333333│texture height
-         * │444444444444444444444││
-         * │555555555555555555555│v
-         * └─────────────────────┴─
-         *
-         * This also means that any references to surface memory should work
-         * with the data as if it were a standard texture with a NPOT width
-         * instead of a texture boxed up to be a power-of-two texture. */
-        src_data = mem;
-        dst_data = data->addr;
-        TRACE("Repacking the surface data from pitch %u to pitch %u.\n", src_row_pitch, dst_row_pitch);
-        h = wined3d_texture_get_level_height(&texture_gl->t, level);
-        for (y = 0; y < h; ++y)
-        {
-            memcpy(dst_data, src_data, dst_row_pitch);
-            src_data += src_row_pitch;
-            dst_data += dst_row_pitch;
-        }
     }
     else if (temporary_mem)
     {
@@ -2914,7 +2789,7 @@ static void wined3d_texture_gl_download_data(struct wined3d_context *context,
 
     if ((src_texture->resource.type == WINED3D_RTYPE_TEXTURE_2D
             && (target == GL_TEXTURE_2D_ARRAY || format_gl->f.conv_byte_count
-            || src_texture->flags & (WINED3D_TEXTURE_CONVERTED | WINED3D_TEXTURE_COND_NP2_EMULATED)))
+            || (src_texture->flags & WINED3D_TEXTURE_CONVERTED)))
             || target == GL_TEXTURE_1D_ARRAY)
     {
         wined3d_texture_gl_download_data_slow_path(src_texture_gl, src_sub_resource_idx, context_gl, dst_bo_addr);
@@ -3782,7 +3657,6 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
     const struct wined3d_d3d_info *d3d_info = &device->adapter->d3d_info;
     struct wined3d_device_parent *device_parent = device->device_parent;
     unsigned int sub_count, i, j, size, offset = 0;
-    unsigned int pow2_width, pow2_height;
     const struct wined3d_format *format;
     HRESULT hr;
 
@@ -3820,10 +3694,8 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
         return WINED3DERR_INVALIDCALL;
     }
 
-    pow2_width = desc->width;
-    pow2_height = desc->height;
     if (((desc->width & (desc->width - 1)) || (desc->height & (desc->height - 1)) || (desc->depth & (desc->depth - 1)))
-            && !d3d_info->texture_npot)
+            && !d3d_info->unconditional_npot)
     {
         /* level_count == 0 returns an error as well. */
         if (level_count != 1 || layer_count != 1 || desc->resource_type == WINED3D_RTYPE_TEXTURE_3D)
@@ -3838,36 +3710,14 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
             WARN("Creating a scratch mipmapped/cube/array NPOT texture despite lack of HW support.\n");
         }
         texture->flags |= WINED3D_TEXTURE_COND_NP2;
-
-        if (desc->resource_type != WINED3D_RTYPE_TEXTURE_3D && !d3d_info->texture_npot_conditional)
-        {
-            /* TODO: Add support for non-power-of-two compressed textures. */
-            if (format->attrs & (WINED3D_FORMAT_ATTR_COMPRESSED | WINED3D_FORMAT_ATTR_HEIGHT_SCALE))
-            {
-                FIXME("Compressed or height scaled non-power-of-two (%ux%u) textures are not supported.\n",
-                        desc->width, desc->height);
-                return WINED3DERR_NOTAVAILABLE;
-            }
-
-            /* Find the nearest pow2 match. */
-            pow2_width = pow2_height = 1;
-            while (pow2_width < desc->width)
-                pow2_width <<= 1;
-            while (pow2_height < desc->height)
-                pow2_height <<= 1;
-            texture->flags |= WINED3D_TEXTURE_COND_NP2_EMULATED;
-        }
     }
-    texture->pow2_width = pow2_width;
-    texture->pow2_height = pow2_height;
 
-    if ((pow2_width > d3d_info->limits.texture_size || pow2_height > d3d_info->limits.texture_size)
+    if ((desc->width > d3d_info->limits.texture_size || desc->height > d3d_info->limits.texture_size)
             && (desc->bind_flags & WINED3D_BIND_SHADER_RESOURCE))
     {
         /* One of four options:
-         * 1: Do the same as we do with NPOT and scale the texture. (Any
-         *    texture ops would require the texture to be scaled which is
-         *    potentially slow.)
+         * 1: Scale the texture. (Any texture ops would require the texture to
+         *    be scaled which is potentially slow.)
          * 2: Set the texture to the maximum size (bad idea).
          * 3: WARN and return WINED3DERR_NOTAVAILABLE.
          * 4: Create the surface, but allow it to be used only for DirectDraw
@@ -3876,12 +3726,12 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
          *    the render target. */
         if (desc->access & WINED3D_RESOURCE_ACCESS_GPU)
         {
-            WARN("Dimensions (%ux%u) exceed the maximum texture size.\n", pow2_width, pow2_height);
+            WARN("Dimensions (%ux%u) exceed the maximum texture size.\n", desc->width, desc->height);
             return WINED3DERR_NOTAVAILABLE;
         }
 
         /* We should never use this surface in combination with OpenGL. */
-        TRACE("Creating an oversized (%ux%u) surface.\n", pow2_width, pow2_height);
+        TRACE("Creating an oversized (%ux%u) surface.\n", desc->width, desc->height);
     }
 
     for (i = 0; i < layer_count; ++i)
@@ -3939,7 +3789,7 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
     texture->layer_count = layer_count;
     texture->level_count = level_count;
     texture->lod = 0;
-    texture->flags |= WINED3D_TEXTURE_POW2_MAT_IDENT | WINED3D_TEXTURE_DOWNLOADABLE;
+    texture->flags |= WINED3D_TEXTURE_DOWNLOADABLE;
     if (flags & WINED3D_TEXTURE_CREATE_GET_DC_LENIENT)
     {
         texture->flags |= WINED3D_TEXTURE_GET_DC_LENIENT;
@@ -3968,28 +3818,6 @@ static HRESULT wined3d_texture_init(struct wined3d_texture *texture, const struc
         for (i = 0; i < texture->layer_count; ++i)
             wined3d_texture_dirty_region_add(texture, i, NULL);
     }
-
-    /* Precalculated scaling for 'faked' non power of two texture coords. */
-    if (texture->resource.gl_type == WINED3D_GL_RES_TYPE_TEX_RECT)
-    {
-        texture->pow2_matrix[0] = (float)desc->width;
-        texture->pow2_matrix[5] = (float)desc->height;
-        texture->flags &= ~WINED3D_TEXTURE_POW2_MAT_IDENT;
-    }
-    else if (texture->flags & WINED3D_TEXTURE_COND_NP2_EMULATED)
-    {
-        texture->pow2_matrix[0] = (((float)desc->width) / ((float)pow2_width));
-        texture->pow2_matrix[5] = (((float)desc->height) / ((float)pow2_height));
-        texture->flags &= ~WINED3D_TEXTURE_POW2_MAT_IDENT;
-    }
-    else
-    {
-        texture->pow2_matrix[0] = 1.0f;
-        texture->pow2_matrix[5] = 1.0f;
-    }
-    texture->pow2_matrix[10] = 1.0f;
-    texture->pow2_matrix[15] = 1.0f;
-    TRACE("x scale %.8e, y scale %.8e.\n", texture->pow2_matrix[0], texture->pow2_matrix[5]);
 
     if (wined3d_texture_use_pbo(texture, d3d_info))
         texture->resource.map_binding = WINED3D_LOCATION_BUFFER;
@@ -4352,9 +4180,6 @@ HRESULT wined3d_texture_gl_init(struct wined3d_texture_gl *texture_gl, struct wi
     if (FAILED(hr = wined3d_texture_init(&texture_gl->t, desc, layer_count, level_count,
             flags, device, parent, parent_ops, &texture_gl[1], &texture_gl_ops)))
         return hr;
-
-    if (texture_gl->t.resource.gl_type == WINED3D_GL_RES_TYPE_TEX_RECT)
-        texture_gl->target = GL_TEXTURE_RECTANGLE_ARB;
 
     if (texture_gl->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY || texture_gl->target == GL_TEXTURE_2D_MULTISAMPLE)
         texture_gl->t.flags &= ~WINED3D_TEXTURE_DOWNLOADABLE;
@@ -5787,91 +5612,6 @@ static void ffp_blitter_destroy(struct wined3d_blitter *blitter, struct wined3d_
     free(blitter);
 }
 
-static bool ffp_blit_supported(enum wined3d_blit_op blit_op, const struct wined3d_context *context,
-        const struct wined3d_resource *src_resource, DWORD src_location,
-        const struct wined3d_resource *dst_resource, DWORD dst_location)
-{
-    const struct wined3d_format *src_format = src_resource->format;
-    const struct wined3d_format *dst_format = dst_resource->format;
-    bool decompress;
-
-    if (src_resource->type != WINED3D_RTYPE_TEXTURE_2D)
-        return false;
-
-    decompress = (src_format->attrs & WINED3D_FORMAT_ATTR_COMPRESSED)
-            && !(dst_format->attrs & WINED3D_FORMAT_ATTR_COMPRESSED);
-    if (!decompress && !(src_resource->access & dst_resource->access & WINED3D_RESOURCE_ACCESS_GPU))
-    {
-        TRACE("Source or destination resource is not GPU accessible.\n");
-        return false;
-    }
-
-    if (blit_op == WINED3D_BLIT_OP_RAW_BLIT && dst_format->id == src_format->id)
-    {
-        if (dst_format->depth_size || dst_format->stencil_size)
-            blit_op = WINED3D_BLIT_OP_DEPTH_BLIT;
-        else
-            blit_op = WINED3D_BLIT_OP_COLOR_BLIT;
-    }
-
-    switch (blit_op)
-    {
-        case WINED3D_BLIT_OP_COLOR_BLIT_CKEY:
-            if (context->d3d_info->ffp_fragment_caps.color_key)
-            {
-                TRACE("Colour keying requires converted textures.\n");
-                return false;
-            }
-        case WINED3D_BLIT_OP_COLOR_BLIT:
-        case WINED3D_BLIT_OP_COLOR_BLIT_ALPHATEST:
-            if (!wined3d_context_gl_const(context)->gl_info->supported[WINED3D_GL_LEGACY_CONTEXT])
-                return false;
-
-            if (TRACE_ON(d3d))
-            {
-                TRACE("Checking support for fixup:\n");
-                dump_color_fixup_desc(src_format->color_fixup);
-            }
-
-            /* We only support identity conversions. */
-            if (!is_identity_fixup(src_format->color_fixup)
-                    || !is_identity_fixup(dst_format->color_fixup))
-            {
-                if (dst_format->id == src_format->id && dst_location == WINED3D_LOCATION_DRAWABLE)
-                {
-                    if (context->device->shader_backend == &none_shader_backend)
-                        WARN("Claiming fixup support because of no shader backend.\n");
-                    return true;
-                }
-                else
-                {
-                    TRACE("Fixups are not supported.\n");
-                    return false;
-                }
-            }
-
-            if (!(dst_resource->bind_flags & WINED3D_BIND_RENDER_TARGET))
-            {
-                if (dst_format->id == src_format->id && dst_location == WINED3D_LOCATION_DRAWABLE)
-                {
-                    if (context->device->shader_backend == &none_shader_backend)
-                        WARN("Claiming !render_target support because of no shader backend.\n");
-                    return true;
-                }
-                else
-                {
-                    TRACE("Can only blit to render targets.\n");
-                    return false;
-                }
-            }
-            return true;
-
-        default:
-            TRACE("Unsupported blit operation %#x.\n", blit_op);
-            return false;
-    }
-}
-
 static bool is_full_clear(const struct wined3d_rendertarget_view *rtv, const RECT *draw_rect, const RECT *clear_rect)
 {
     unsigned int height = rtv->height;
@@ -5963,8 +5703,8 @@ static void ffp_blitter_clear_rendertargets(struct wined3d_device *device, unsig
         unsigned int ds_level = dsv->sub_resource_idx % depth_stencil->level_count;
 
         render_offscreen = true;
-        drawable_width = wined3d_texture_get_level_pow2_width(depth_stencil, ds_level);
-        drawable_height = wined3d_texture_get_level_pow2_height(depth_stencil, ds_level);
+        drawable_width = wined3d_texture_get_level_width(depth_stencil, ds_level);
+        drawable_height = wined3d_texture_get_level_height(depth_stencil, ds_level);
     }
 
     if (depth_stencil)
@@ -6232,151 +5972,17 @@ static DWORD ffp_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_blit
         const struct wined3d_color_key *colour_key, enum wined3d_texture_filter_type filter,
         const struct wined3d_format *resolve_format)
 {
-    struct wined3d_texture_gl *src_texture_gl = wined3d_texture_gl(src_texture);
-    struct wined3d_context_gl *context_gl = wined3d_context_gl(context);
-    const struct wined3d_gl_info *gl_info = context_gl->gl_info;
-    struct wined3d_resource *src_resource, *dst_resource;
-    struct wined3d_texture *staging_texture = NULL;
-    struct wined3d_color_key old_blt_key;
-    struct wined3d_device *device;
     struct wined3d_blitter *next;
-    DWORD old_colour_key_flags;
-    RECT r;
 
-    src_resource = &src_texture->resource;
-    dst_resource = &dst_texture->resource;
-    device = dst_resource->device;
-
-    if (!ffp_blit_supported(op, context, src_resource, src_location, dst_resource, dst_location))
+    if (!(next = blitter->next))
     {
-        if ((next = blitter->next))
-            return next->ops->blitter_blit(next, op, context, src_texture, src_sub_resource_idx, src_location,
-                    src_rect, dst_texture, dst_sub_resource_idx, dst_location, dst_rect, colour_key, filter,
-                    resolve_format);
+        ERR("No blitter to handle blit op %#x.\n", op);
+        return dst_location;
     }
 
-    TRACE("Blt from texture %p, %u to rendertarget %p, %u.\n",
-            src_texture, src_sub_resource_idx, dst_texture, dst_sub_resource_idx);
-
-    old_blt_key = src_texture->async.src_blt_color_key;
-    old_colour_key_flags = src_texture->async.color_key_flags;
-    wined3d_texture_set_color_key(src_texture, WINED3D_CKEY_SRC_BLT, colour_key);
-
-    if (!(src_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU))
-    {
-        struct wined3d_resource_desc desc;
-        struct wined3d_box upload_box;
-        unsigned int src_level;
-        HRESULT hr;
-
-        TRACE("Source texture is not GPU accessible, creating a staging texture.\n");
-
-        src_level = src_sub_resource_idx % src_texture->level_count;
-        desc.resource_type = WINED3D_RTYPE_TEXTURE_2D;
-        desc.format = src_texture->resource.format->id;
-        desc.multisample_type = src_texture->resource.multisample_type;
-        desc.multisample_quality = src_texture->resource.multisample_quality;
-        desc.usage = WINED3DUSAGE_CS;
-        desc.bind_flags = 0;
-        desc.access = WINED3D_RESOURCE_ACCESS_GPU;
-        desc.width = wined3d_texture_get_level_width(src_texture, src_level);
-        desc.height = wined3d_texture_get_level_height(src_texture, src_level);
-        desc.depth = 1;
-        desc.size = 0;
-
-        if (FAILED(hr = wined3d_texture_create(device, &desc, 1, 1, 0,
-                NULL, NULL, &wined3d_null_parent_ops, &staging_texture)))
-        {
-            ERR("Failed to create staging texture, hr %#lx.\n", hr);
-            return dst_location;
-        }
-
-        wined3d_box_set(&upload_box, 0, 0, desc.width, desc.height, 0, desc.depth);
-        wined3d_texture_upload_from_texture(staging_texture, 0, 0, 0, 0,
-                src_texture, src_sub_resource_idx, &upload_box);
-
-        src_texture = staging_texture;
-        src_texture_gl = wined3d_texture_gl(src_texture);
-        src_sub_resource_idx = 0;
-    }
-    else
-    {
-        /* Make sure the surface is up-to-date. This should probably use
-         * surface_load_location() and worry about the destination surface
-         * too, unless we're overwriting it completely. */
-        wined3d_texture_load(src_texture, context, FALSE);
-    }
-
-    if (wined3d_texture_is_full_rect(dst_texture, dst_sub_resource_idx % dst_texture->level_count, dst_rect))
-        wined3d_texture_prepare_location(dst_texture, dst_sub_resource_idx, context, dst_location);
-    else
-        wined3d_texture_load_location(dst_texture, dst_sub_resource_idx, context, dst_location);
-
-    context_gl_apply_texture_draw_state(context_gl, dst_texture, dst_sub_resource_idx, dst_location);
-    wined3d_context_gl_apply_ffp_blit_state(context_gl, device);
-
-    if (dst_location == WINED3D_LOCATION_DRAWABLE)
-    {
-        r = *dst_rect;
-        wined3d_texture_translate_drawable_coords(dst_texture, context_gl->window, &r);
-        dst_rect = &r;
-    }
-
-    gl_info->gl_ops.gl.p_glEnable(src_texture_gl->target);
-    checkGLcall("glEnable(target)");
-
-    if (op == WINED3D_BLIT_OP_COLOR_BLIT_ALPHATEST || colour_key)
-    {
-        gl_info->gl_ops.gl.p_glEnable(GL_ALPHA_TEST);
-        checkGLcall("glEnable(GL_ALPHA_TEST)");
-    }
-
-    if (colour_key)
-    {
-        /* For P8 surfaces, the alpha component contains the palette index.
-         * Which means that the colourkey is one of the palette entries. In
-         * other cases pixels that should be masked away have alpha set to 0. */
-        if (src_texture->resource.format->id == WINED3DFMT_P8_UINT)
-            gl_info->gl_ops.gl.p_glAlphaFunc(GL_NOTEQUAL,
-                    (float)src_texture->async.src_blt_color_key.color_space_low_value / 255.0f);
-        else
-            gl_info->gl_ops.gl.p_glAlphaFunc(GL_NOTEQUAL, 0.0f);
-        checkGLcall("glAlphaFunc");
-    }
-
-    wined3d_context_gl_draw_textured_quad(context_gl, src_texture_gl,
-            src_sub_resource_idx, src_rect, dst_rect, filter);
-
-    if (op == WINED3D_BLIT_OP_COLOR_BLIT_ALPHATEST || colour_key)
-    {
-        gl_info->gl_ops.gl.p_glDisable(GL_ALPHA_TEST);
-        checkGLcall("glDisable(GL_ALPHA_TEST)");
-    }
-
-    gl_info->gl_ops.gl.p_glDisable(GL_TEXTURE_2D);
-    checkGLcall("glDisable(GL_TEXTURE_2D)");
-    if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
-    {
-        gl_info->gl_ops.gl.p_glDisable(GL_TEXTURE_CUBE_MAP_ARB);
-        checkGLcall("glDisable(GL_TEXTURE_CUBE_MAP_ARB)");
-    }
-    if (gl_info->supported[ARB_TEXTURE_RECTANGLE])
-    {
-        gl_info->gl_ops.gl.p_glDisable(GL_TEXTURE_RECTANGLE_ARB);
-        checkGLcall("glDisable(GL_TEXTURE_RECTANGLE_ARB)");
-    }
-
-    if (dst_texture->swapchain && dst_texture->swapchain->front_buffer == dst_texture)
-        gl_info->gl_ops.gl.p_glFlush();
-
-    /* Restore the colour key parameters */
-    wined3d_texture_set_color_key(src_texture, WINED3D_CKEY_SRC_BLT,
-            (old_colour_key_flags & WINED3D_CKEY_SRC_BLT) ? &old_blt_key : NULL);
-
-    if (staging_texture)
-        wined3d_texture_decref(staging_texture);
-
-    return dst_location;
+    return next->ops->blitter_blit(next, op, context, src_texture, src_sub_resource_idx, src_location,
+            src_rect, dst_texture, dst_sub_resource_idx, dst_location, dst_rect, colour_key, filter,
+            resolve_format);
 }
 
 static const struct wined3d_blitter_ops ffp_blitter_ops =

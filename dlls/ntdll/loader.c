@@ -71,7 +71,7 @@ typedef DWORD (CALLBACK *DLLENTRYPROC)(HMODULE,DWORD,LPVOID);
 typedef void  (CALLBACK *LDRENUMPROC)(LDR_DATA_TABLE_ENTRY *, void *, BOOLEAN *);
 
 void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) = NULL;
-NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * ) = __wine_unix_call;
+NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * ) = NULL;
 
 static DWORD (WINAPI *pCtrlRoutine)(void *);
 
@@ -3316,15 +3316,6 @@ NTSTATUS WINAPI __wine_ctrl_routine( void *arg )
 
 
 /***********************************************************************
- *              __wine_unix_call
- */
-NTSTATUS WINAPI __wine_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
-{
-    return __wine_unix_call_dispatcher( handle, code, args );
-}
-
-
-/***********************************************************************
  *           __wine_unix_spawnvp
  */
 NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait )
@@ -3432,7 +3423,6 @@ NTSTATUS WINAPI LdrGetDllFullName( HMODULE module, UNICODE_STRING *name )
     return status;
 }
 
-extern const char * CDECL wine_get_version(void);
 
 /******************************************************************
  *		LdrGetDllHandleEx (NTDLL.@)
@@ -3493,6 +3483,7 @@ NTSTATUS WINAPI LdrGetDllHandleEx( ULONG flags, LPCWSTR load_path, ULONG *dll_ch
     return status;
 }
 
+extern const char * CDECL wine_get_version(void);
 
 /******************************************************************
  *		LdrGetDllHandle (NTDLL.@)

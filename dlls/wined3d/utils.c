@@ -2235,8 +2235,6 @@ static GLenum wined3d_gl_type_to_enum(enum wined3d_gl_resource_type type)
             return GL_TEXTURE_3D;
         case WINED3D_GL_RES_TYPE_TEX_CUBE:
             return GL_TEXTURE_CUBE_MAP_ARB;
-        case WINED3D_GL_RES_TYPE_TEX_RECT:
-            return GL_TEXTURE_RECTANGLE_ARB;
         case WINED3D_GL_RES_TYPE_BUFFER:
             return GL_TEXTURE_2D; /* TODO: GL_TEXTURE_BUFFER. */
         case WINED3D_GL_RES_TYPE_RB:
@@ -2255,7 +2253,6 @@ static void delete_fbo_attachment(const struct wined3d_gl_info *gl_info,
     {
         case WINED3D_GL_RES_TYPE_TEX_1D:
         case WINED3D_GL_RES_TYPE_TEX_2D:
-        case WINED3D_GL_RES_TYPE_TEX_RECT:
         case WINED3D_GL_RES_TYPE_TEX_3D:
         case WINED3D_GL_RES_TYPE_TEX_CUBE:
             gl_info->gl_ops.gl.p_glDeleteTextures(1, &object);
@@ -2296,7 +2293,6 @@ static void create_and_bind_fbo_attachment(const struct wined3d_gl_info *gl_info
             break;
 
         case WINED3D_GL_RES_TYPE_TEX_2D:
-        case WINED3D_GL_RES_TYPE_TEX_RECT:
             gl_info->gl_ops.gl.p_glGenTextures(1, object);
             gl_info->gl_ops.gl.p_glBindTexture(wined3d_gl_type_to_enum(d3d_type), *object);
             gl_info->gl_ops.gl.p_glTexImage2D(wined3d_gl_type_to_enum(d3d_type), 0, internal, 16, 16, 0,
@@ -2658,7 +2654,6 @@ static void check_fbo_compat(struct wined3d_caps_gl_ctx *ctx, struct wined3d_for
 
                     case WINED3D_GL_RES_TYPE_TEX_2D:
                     case WINED3D_GL_RES_TYPE_TEX_3D:
-                    case WINED3D_GL_RES_TYPE_TEX_RECT:
                         /* Rebinding texture to workaround a fglrx bug. */
                         gl_info->gl_ops.gl.p_glBindTexture(wined3d_gl_type_to_enum(type), object);
                         gl_info->gl_ops.gl.p_glGetTexImage(wined3d_gl_type_to_enum(type), 0, GL_BGRA,
@@ -3132,7 +3127,6 @@ static void query_internal_format(struct wined3d_adapter *adapter,
         format->f.caps[WINED3D_GL_RES_TYPE_TEX_2D] &= ~WINED3D_FORMAT_CAP_TEXTURE;
         format->f.caps[WINED3D_GL_RES_TYPE_TEX_3D] &= ~WINED3D_FORMAT_CAP_TEXTURE;
         format->f.caps[WINED3D_GL_RES_TYPE_TEX_CUBE] &= ~WINED3D_FORMAT_CAP_TEXTURE;
-        format->f.caps[WINED3D_GL_RES_TYPE_TEX_RECT] &= ~WINED3D_FORMAT_CAP_TEXTURE;
     }
 
     query_view_class(format);
@@ -3222,9 +3216,6 @@ static BOOL init_format_texture_info(struct wined3d_adapter *adapter, struct win
 
         if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
             format->f.caps[WINED3D_GL_RES_TYPE_TEX_CUBE] |= format_texture_info[i].caps | WINED3D_FORMAT_CAP_BLIT;
-
-        if (gl_info->supported[ARB_TEXTURE_RECTANGLE])
-            format->f.caps[WINED3D_GL_RES_TYPE_TEX_RECT] |= format_texture_info[i].caps | WINED3D_FORMAT_CAP_BLIT;
 
         format->f.caps[WINED3D_GL_RES_TYPE_RB] |= format_texture_info[i].caps | WINED3D_FORMAT_CAP_BLIT;
         format->f.caps[WINED3D_GL_RES_TYPE_RB] &= ~WINED3D_FORMAT_CAP_TEXTURE;
@@ -5356,8 +5347,6 @@ const char *debug_d3dstate(uint32_t state)
         return wine_dbg_sprintf("STATE_TEXTURESTAGE(%#x, %s)",
                 texture_stage, debug_d3dtexturestate(texture_state));
     }
-    if (STATE_IS_SAMPLER(state))
-        return wine_dbg_sprintf("STATE_SAMPLER(%#x)", state - STATE_SAMPLER(0));
     if (STATE_IS_COMPUTE_SHADER(state))
         return wine_dbg_sprintf("STATE_SHADER(%s)", debug_shader_type(WINED3D_SHADER_TYPE_COMPUTE));
     if (STATE_IS_GRAPHICS_SHADER(state))
@@ -5398,8 +5387,6 @@ const char *debug_d3dstate(uint32_t state)
         return "STATE_RASTERIZER";
     if (STATE_IS_DEPTH_BOUNDS(state))
         return "STATE_DEPTH_BOUNDS";
-    if (STATE_IS_POINTSPRITECOORDORIGIN(state))
-        return "STATE_POINTSPRITECOORDORIGIN";
     if (STATE_IS_BASEVERTEXINDEX(state))
         return "STATE_BASEVERTEXINDEX";
     if (STATE_IS_FRAMEBUFFER(state))
@@ -5714,7 +5701,7 @@ void get_projection_matrix(const struct wined3d_context *context, const struct w
 
 /* Setup this textures matrix according to the texture flags. */
 static void compute_texture_matrix(const struct wined3d_matrix *matrix, uint32_t flags, BOOL calculated_coords,
-        BOOL transformed, enum wined3d_format_id format_id, BOOL ffp_proj_control, struct wined3d_matrix *out_matrix)
+        BOOL transformed, enum wined3d_format_id format_id, struct wined3d_matrix *out_matrix)
 {
     struct wined3d_matrix mat;
 
@@ -5732,92 +5719,41 @@ static void compute_texture_matrix(const struct wined3d_matrix *matrix, uint32_t
 
     mat = *matrix;
 
-    if (flags & WINED3D_TTFF_PROJECTED)
+    /* Under Direct3D the R/Z coord can be used for translation, under
+     * OpenGL we use the Q coord instead. */
+    if (!(flags & WINED3D_TTFF_PROJECTED) && !calculated_coords)
     {
-        if (!ffp_proj_control)
+        switch (format_id)
         {
-            switch (flags & ~WINED3D_TTFF_PROJECTED)
-            {
-                case WINED3D_TTFF_COUNT2:
-                    mat._14 = mat._12;
-                    mat._24 = mat._22;
-                    mat._34 = mat._32;
-                    mat._44 = mat._42;
-                    mat._12 = mat._22 = mat._32 = mat._42 = 0.0f;
-                    break;
-                case WINED3D_TTFF_COUNT3:
-                    mat._14 = mat._13;
-                    mat._24 = mat._23;
-                    mat._34 = mat._33;
-                    mat._44 = mat._43;
-                    mat._13 = mat._23 = mat._33 = mat._43 = 0.0f;
-                    break;
-            }
-        }
-    }
-    else
-    {
-        /* Under Direct3D the R/Z coord can be used for translation, under
-         * OpenGL we use the Q coord instead. */
-        if (!calculated_coords)
-        {
-            switch (format_id)
-            {
-                /* Direct3D passes the default 1.0 in the 2nd coord, while GL
-                 * passes it in the 4th. Swap 2nd and 4th coord. No need to
-                 * store the value of mat._41 in mat._21 because the input
-                 * value to the transformation will be 0, so the matrix value
-                 * is irrelevant. */
-                case WINED3DFMT_R32_FLOAT:
-                    mat._41 = mat._21;
-                    mat._42 = mat._22;
-                    mat._43 = mat._23;
-                    mat._44 = mat._24;
-                    break;
-                /* See above, just 3rd and 4th coord. */
-                case WINED3DFMT_R32G32_FLOAT:
-                    mat._41 = mat._31;
-                    mat._42 = mat._32;
-                    mat._43 = mat._33;
-                    mat._44 = mat._34;
-                    break;
-                case WINED3DFMT_R32G32B32_FLOAT: /* Opengl defaults match dx defaults */
-                case WINED3DFMT_R32G32B32A32_FLOAT: /* No defaults apply, all app defined */
+            /* Direct3D passes the default 1.0 in the 2nd coord, while GL
+             * passes it in the 4th. Swap 2nd and 4th coord. No need to
+             * store the value of mat._41 in mat._21 because the input
+             * value to the transformation will be 0, so the matrix value
+             * is irrelevant. */
+            case WINED3DFMT_R32_FLOAT:
+                mat._41 = mat._21;
+                mat._42 = mat._22;
+                mat._43 = mat._23;
+                mat._44 = mat._24;
+                break;
+            /* See above, just 3rd and 4th coord. */
+            case WINED3DFMT_R32G32_FLOAT:
+                mat._41 = mat._31;
+                mat._42 = mat._32;
+                mat._43 = mat._33;
+                mat._44 = mat._34;
+                break;
+            case WINED3DFMT_R32G32B32_FLOAT: /* Opengl defaults match dx defaults */
+            case WINED3DFMT_R32G32B32A32_FLOAT: /* No defaults apply, all app defined */
 
-                /* This is to prevent swapping the matrix lines and put the default 4th coord = 1.0
-                 * into a bad place. The division elimination below will apply to make sure the
-                 * 1.0 doesn't do anything bad. The caller will set this value if the stride is 0
-                 */
-                case WINED3DFMT_UNKNOWN: /* No texture coords, 0/0/0/1 defaults are passed */
-                    break;
-                default:
-                    FIXME("Unexpected fixed function texture coord input\n");
-            }
-        }
-        if (!ffp_proj_control)
-        {
-            switch (flags & ~WINED3D_TTFF_PROJECTED)
-            {
-                /* case WINED3D_TTFF_COUNT1: Won't ever get here. */
-                case WINED3D_TTFF_COUNT2:
-                    mat._13 = mat._23 = mat._33 = mat._43 = 0.0f;
-                /* OpenGL divides the first 3 vertex coordinates by the 4th by
-                 * default, which is essentially the same as D3DTTFF_PROJECTED.
-                 * Make sure that the 4th coordinate evaluates to 1.0 to
-                 * eliminate that.
-                 *
-                 * If the fixed function pipeline is used, the 4th value
-                 * remains unused, so there is no danger in doing this. With
-                 * vertex shaders we have a problem. Should an application hit
-                 * that problem, the code here would have to check for pixel
-                 * shaders, and the shader has to undo the default GL divide.
-                 *
-                 * A more serious problem occurs if the application passes 4
-                 * coordinates in, and the 4th is != 1.0 (OpenGL default).
-                 * This would have to be fixed with immediate mode draws. */
-                default:
-                    mat._14 = mat._24 = mat._34 = 0.0f; mat._44 = 1.0f;
-            }
+            /* This is to prevent swapping the matrix lines and put the default 4th coord = 1.0
+             * into a bad place. The division elimination below will apply to make sure the
+             * 1.0 doesn't do anything bad. The caller will set this value if the stride is 0
+             */
+            case WINED3DFMT_UNKNOWN: /* No texture coords, 0/0/0/1 defaults are passed */
+                break;
+            default:
+                FIXME("Unexpected fixed function texture coord input\n");
         }
     }
 
@@ -5831,28 +5767,13 @@ void get_texture_matrix(const struct wined3d_context *context, const struct wine
             != WINED3DTSS_TCI_PASSTHRU;
     unsigned int coord_idx = min(state->texture_states[tex][WINED3D_TSS_TEXCOORD_INDEX] & 0x0000ffff,
             WINED3D_MAX_FFP_TEXTURES - 1);
-    struct wined3d_texture *texture = wined3d_state_get_ffp_texture(state, tex);
 
     compute_texture_matrix(&state->transforms[WINED3D_TS_TEXTURE0 + tex],
             state->texture_states[tex][WINED3D_TSS_TEXTURE_TRANSFORM_FLAGS],
             generated, context->stream_info.position_transformed,
             context->stream_info.use_map & (1u << (WINED3D_FFP_TEXCOORD0 + coord_idx))
             ? context->stream_info.elements[WINED3D_FFP_TEXCOORD0 + coord_idx].format->id
-            : WINED3DFMT_UNKNOWN,
-            context->d3d_info->ffp_fragment_caps.proj_control, mat);
-
-    if (texture && !(texture->flags & WINED3D_TEXTURE_POW2_MAT_IDENT))
-    {
-        if (generated)
-            FIXME("Non-power-of-two texture being used with generated texture coords.\n");
-        /* NP2 texcoord fixup is implemented for pixelshaders so only enable the
-         * fixed-function-pipeline fixup via pow2Matrix when no PS is used. */
-        if (!use_ps(state))
-        {
-            TRACE("Non-power-of-two texture matrix multiply fixup.\n");
-            multiply_matrix(mat, mat, (struct wined3d_matrix *)texture->pow2_matrix);
-        }
-    }
+            : WINED3DFMT_UNKNOWN, mat);
 }
 
 void get_pointsize_minmax(const struct wined3d_context *context, const struct wined3d_state *state,

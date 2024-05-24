@@ -41,6 +41,8 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_ABGR32, D3DFMT_A8B8G8R8);
+
 struct stream_response
 {
     struct list entry;
@@ -258,7 +260,6 @@ static ULONG source_reader_release(struct source_reader *reader)
         }
         source_reader_release_responses(reader, NULL);
         free(reader->streams);
-        MFUnlockWorkQueue(reader->queue);
         DeleteCriticalSection(&reader->cs);
         free(reader);
     }
@@ -1666,6 +1667,7 @@ static ULONG WINAPI src_reader_Release(IMFSourceReaderEx *iface)
             }
         }
 
+        MFUnlockWorkQueue(reader->queue);
         source_reader_release(reader);
     }
 
@@ -2035,6 +2037,17 @@ static HRESULT source_reader_create_transform(struct source_reader *reader, BOOL
         if (SUCCEEDED(IMFMediaType_GetUINT32(output_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &bytes_per_second)))
             entry->min_buffer_size = max(entry->min_buffer_size, bytes_per_second);
     }
+
+    if (IsEqualGUID(&out_type.guidMajorType, &MFMediaType_Video) && IsEqualGUID(&out_type.guidSubtype, &MFVideoFormat_ABGR32)
+            && IsEqualGUID(&category, &MFT_CATEGORY_VIDEO_PROCESSOR))
+    {
+        /* The video processor isn't registered for MFVideoFormat_ABGR32, and native even only supports that format when
+         * D3D-enabled, we still want to instantiate a video processor in such case, so fixup the subtype for MFTEnumEx.
+         */
+        WARN("Fixing up MFVideoFormat_ABGR32 subtype for the video processor\n");
+        out_type.guidSubtype = MFVideoFormat_RGB32;
+    }
+
 
     count = 0;
     if (SUCCEEDED(hr = MFTEnumEx(category, 0, &in_type, allow_processor ? NULL : &out_type, &activates, &count)))

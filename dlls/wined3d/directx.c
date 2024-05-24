@@ -2437,12 +2437,8 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d_adapter *adapter,
                           WINED3DPTEXTURECAPS_PROJECTED          |
                           WINED3DPTEXTURECAPS_PERSPECTIVE;
 
-    if (!d3d_info->texture_npot)
-    {
-        caps->TextureCaps |= WINED3DPTEXTURECAPS_POW2;
-        if (d3d_info->texture_npot_conditional)
-            caps->TextureCaps |= WINED3DPTEXTURECAPS_NONPOW2CONDITIONAL;
-    }
+    if (!d3d_info->unconditional_npot)
+        caps->TextureCaps |= WINED3DPTEXTURECAPS_POW2 | WINED3DPTEXTURECAPS_NONPOW2CONDITIONAL;
 
     caps->TextureFilterCaps =  WINED3DPTFILTERCAPS_MAGFLINEAR       |
                                WINED3DPTFILTERCAPS_MAGFPOINT        |
@@ -2770,7 +2766,6 @@ static const struct wined3d_state_entry_template misc_state_template_no3d[] =
     {STATE_VDECL,                                         {STATE_VDECL, state_nop}},
     {STATE_RASTERIZER,                                    {STATE_VDECL}},
     {STATE_SCISSORRECT,                                   {STATE_VDECL}},
-    {STATE_POINTSPRITECOORDORIGIN,                        {STATE_VDECL}},
 
     {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
     {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
@@ -2827,27 +2822,6 @@ static const struct wined3d_state_entry_template misc_state_template_no3d[] =
     {STATE_RENDER(WINED3D_RS_ZFUNC),                      {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_DITHERENABLE),               {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_MULTISAMPLEANTIALIAS),       {STATE_VDECL}},
-    /* Samplers */
-    {STATE_SAMPLER(0),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(1),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(2),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(3),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(4),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(5),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(6),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(7),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(8),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(9),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(10),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(11),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(12),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(13),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(14),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(15),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(16), /* Vertex sampler 0 */            {STATE_VDECL}},
-    {STATE_SAMPLER(17), /* Vertex sampler 1 */            {STATE_VDECL}},
-    {STATE_SAMPLER(18), /* Vertex sampler 2 */            {STATE_VDECL}},
-    {STATE_SAMPLER(19), /* Vertex sampler 3 */            {STATE_VDECL}},
     {STATE_BASEVERTEXINDEX,                               {STATE_VDECL}},
     {STATE_FRAMEBUFFER,                                   {STATE_VDECL}},
     {STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL),             {STATE_VDECL}},
@@ -3323,7 +3297,7 @@ static void wined3d_adapter_no3d_init_d3d_info(struct wined3d_adapter *adapter, 
     struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
 
     d3d_info->wined3d_creation_flags = wined3d_creation_flags;
-    d3d_info->texture_npot = TRUE;
+    d3d_info->unconditional_npot = true;
     d3d_info->feature_level = WINED3D_FEATURE_LEVEL_5;
 }
 

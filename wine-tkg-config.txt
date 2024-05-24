@@ -1,8 +1,8 @@
-# Last wine-tkg-fsync-git configuration - Tue May 14 10:26:21 AM CEST 2024 :
+# Last wine-tkg-fsync-git configuration - Fri May 24 11:16:56 AM CEST 2024 :
 
 Local cfg files used
 
-Wine (plain) version: 9.8.r117.ge6e1bbb4109
+Wine (plain) version: 9.9.r87.gbadaed64192
 
 Using esync patchset (version ce79346)
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)

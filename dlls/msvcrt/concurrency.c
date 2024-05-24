@@ -27,7 +27,7 @@
 #include "wine/exception.h"
 #include "wine/list.h"
 #include "msvcrt.h"
-#include "cxx.h"
+#include "cppexcept.h"
 
 #if _MSVCR_VER >= 100
 
@@ -35,6 +35,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
 
 typedef exception cexception;
 CREATE_EXCEPTION_OBJECT(cexception)
+DEFINE_CXX_TYPE_INFO(cexception)
 
 static LONG context_id = -1;
 static LONG scheduler_id = -1;
@@ -3774,7 +3775,7 @@ __ASM_BLOCK_END
 
 void msvcrt_init_concurrency(void *base)
 {
-#ifdef __x86_64__
+#ifdef RTTI_USE_RVA
     init_cexception_rtti(base);
     init_improper_lock_rtti(base);
     init_improper_scheduler_attach_rtti(base);

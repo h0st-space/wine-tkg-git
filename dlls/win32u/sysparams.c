@@ -932,6 +932,7 @@ struct device_manager_ctx
     struct gpu gpu;
     struct source source;
     HKEY source_key;
+    struct list vulkan_gpus;
     /* for the virtual desktop settings */
     BOOL is_primary;
     DEVMODEW primary;
@@ -1183,12 +1184,35 @@ static BOOL write_gpu_to_registry( const struct gpu *gpu, const struct pci_id *p
     return TRUE;
 }
 
-static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *vulkan_uuid,
-                     ULONGLONG memory_size, void *param )
+static struct vulkan_gpu *find_vulkan_gpu_from_uuid( const struct device_manager_ctx *ctx, const GUID *uuid )
+{
+    struct vulkan_gpu *gpu;
+
+    if (!uuid) return NULL;
+
+    LIST_FOR_EACH_ENTRY( gpu, &ctx->vulkan_gpus, struct vulkan_gpu, entry )
+        if (!memcmp( &gpu->uuid, uuid, sizeof(*uuid) )) return gpu;
+
+    return NULL;
+}
+
+static struct vulkan_gpu *find_vulkan_gpu_from_pci_id( const struct device_manager_ctx *ctx, const struct pci_id *pci_id )
+{
+    struct vulkan_gpu *gpu;
+
+    LIST_FOR_EACH_ENTRY( gpu, &ctx->vulkan_gpus, struct vulkan_gpu, entry )
+        if (gpu->pci_id.vendor == pci_id->vendor && gpu->pci_id.device == pci_id->device) return gpu;
+
+    return NULL;
+}
+
+static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *vulkan_uuid, void *param )
 {
     struct device_manager_ctx *ctx = param;
     char buffer[4096];
     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+    struct vulkan_gpu *vulkan_gpu = NULL;
+    struct list *ptr;
     unsigned int i;
     HKEY hkey, subkey;
     DWORD len;
@@ -1208,7 +1232,24 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
 
     memset( &ctx->gpu, 0, sizeof(ctx->gpu) );
     ctx->gpu.index = ctx->gpu_count;
+
+    if ((vulkan_gpu = find_vulkan_gpu_from_uuid( ctx, vulkan_uuid )))
+        TRACE( "Found vulkan GPU matching uuid %s, pci_id %#04x:%#04x, name %s\n", debugstr_guid(&vulkan_gpu->uuid),
+               pci_id->vendor, pci_id->device, debugstr_a(vulkan_gpu->name));
+    else if ((vulkan_gpu = find_vulkan_gpu_from_pci_id( ctx, pci_id )))
+        TRACE( "Found vulkan GPU matching pci_id %#04x:%#04x, uuid %s, name %s\n", pci_id->vendor, pci_id->device,
+               debugstr_guid(&vulkan_gpu->uuid), debugstr_a(vulkan_gpu->name));
+    else if ((ptr = list_head( &ctx->vulkan_gpus )))
+    {
+        vulkan_gpu = LIST_ENTRY( ptr, struct vulkan_gpu, entry );
+        WARN( "Using vulkan GPU pci_id %#04x:%#04x, uuid %s, name %s\n", pci_id->vendor, pci_id->device,
+               debugstr_guid(&vulkan_gpu->uuid), debugstr_a(vulkan_gpu->name));
+    }
+
     if (vulkan_uuid) ctx->gpu.vulkan_uuid = *vulkan_uuid;
+    else if (vulkan_gpu) ctx->gpu.vulkan_uuid = vulkan_gpu->uuid;
+
+    if (!name && vulkan_gpu) name = vulkan_gpu->name;
     if (name) RtlUTF8ToUnicodeN( ctx->gpu.name, sizeof(ctx->gpu.name) - sizeof(WCHAR), &len, name, strlen( name ) );
 
     snprintf( ctx->gpu.path, sizeof(ctx->gpu.path), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X\\%08X",
@@ -1252,10 +1293,16 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
 
     NtClose( hkey );
 
-    if (!write_gpu_to_registry( &ctx->gpu, pci_id, memory_size ))
+    if (!write_gpu_to_registry( &ctx->gpu, pci_id, vulkan_gpu ? vulkan_gpu->memory : 0 ))
         WARN( "Failed to write gpu to registry\n" );
     else
         ctx->gpu_count++;
+
+    if (vulkan_gpu)
+    {
+        list_remove( &vulkan_gpu->entry );
+        free_vulkan_gpu( vulkan_gpu );
+    }
 }
 
 static BOOL write_source_to_registry( const struct source *source, HKEY *source_key )
@@ -1487,6 +1534,13 @@ static void release_display_manager_ctx( struct device_manager_ctx *ctx )
         last_query_display_time = 0;
     }
     if (ctx->gpu_count) cleanup_devices();
+
+    while (!list_empty( &ctx->vulkan_gpus ))
+    {
+        struct vulkan_gpu *gpu = LIST_ENTRY( list_head( &ctx->vulkan_gpus ), struct vulkan_gpu, entry );
+        list_remove( &gpu->entry );
+        free_vulkan_gpu( gpu );
+    }
 }
 
 static void clear_display_devices(void)
@@ -1711,34 +1765,40 @@ static BOOL update_display_cache_from_registry(void)
     return ret;
 }
 
-static BOOL default_update_display_devices( BOOL force, struct device_manager_ctx *ctx )
+static NTSTATUS default_update_display_devices( BOOL force, struct device_manager_ctx *ctx )
 {
     /* default implementation: expose an adapter and a monitor with a few standard modes,
      * and read / write current display settings from / to the registry.
      */
     static const DEVMODEW modes[] =
     {
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 32, .dmPelsWidth = 640, .dmPelsHeight = 480, .dmDisplayFrequency = 60, },
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 32, .dmPelsWidth = 800, .dmPelsHeight = 600, .dmDisplayFrequency = 60, },
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 32, .dmPelsWidth = 1024, .dmPelsHeight = 768, .dmDisplayFrequency = 60, },
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 16, .dmPelsWidth = 640, .dmPelsHeight = 480, .dmDisplayFrequency = 60, },
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 16, .dmPelsWidth = 800, .dmPelsHeight = 600, .dmDisplayFrequency = 60, },
-        { .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
+        { .dmSize = sizeof(DEVMODEW),
+          .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
           .dmBitsPerPel = 16, .dmPelsWidth = 1024, .dmPelsHeight = 768, .dmDisplayFrequency = 60, },
     };
     static const DWORD source_flags = DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE | DISPLAY_DEVICE_VGA_COMPATIBLE;
     struct pci_id pci_id = {0};
     struct gdi_monitor monitor = {0};
-    DEVMODEW mode = {{0}};
+    DEVMODEW mode = {.dmSize = sizeof(mode)};
 
-    if (!force) return TRUE;
+    if (!force) return STATUS_ALREADY_COMPLETE;
 
-    add_gpu( "Default GPU", &pci_id, NULL, 0, ctx );
+    add_gpu( "Default GPU", &pci_id, NULL, ctx );
     add_source( "Default", source_flags, ctx );
 
     if (!read_source_mode( ctx->source_key, ENUM_CURRENT_SETTINGS, &mode ))
@@ -1754,7 +1814,7 @@ static BOOL default_update_display_devices( BOOL force, struct device_manager_ct
     add_monitor( &monitor, ctx );
     add_modes( &mode, ARRAY_SIZE(modes), modes, ctx );
 
-    return TRUE;
+    return STATUS_SUCCESS;
 }
 
 /* parse the desktop size specification */
@@ -1838,6 +1898,7 @@ static void add_virtual_modes( struct device_manager_ctx *ctx, const DEVMODEW *c
     {
         DEVMODEW mode =
         {
+            .dmSize = sizeof(mode),
             .dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
             .dmDisplayFrequency = 60,
             .dmBitsPerPel = depths[i],
@@ -1872,7 +1933,7 @@ static void add_virtual_modes( struct device_manager_ctx *ctx, const DEVMODEW *c
 
 static BOOL add_virtual_source( struct device_manager_ctx *ctx )
 {
-    DEVMODEW current, initial = ctx->primary, maximum = ctx->primary;
+    DEVMODEW current = {.dmSize = sizeof(current)}, initial = ctx->primary, maximum = ctx->primary;
     struct source virtual_source =
     {
         .state_flags = DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE | DISPLAY_DEVICE_VGA_COMPATIBLE,
@@ -1933,12 +1994,24 @@ static UINT update_display_devices( BOOL force, struct device_manager_ctx *ctx )
     return status;
 }
 
+static void add_vulkan_only_gpus( struct device_manager_ctx *ctx )
+{
+    struct list gpus = LIST_INIT(gpus);
+    struct vulkan_gpu *gpu, *next;
+
+    LIST_FOR_EACH_ENTRY_SAFE( gpu, next, &ctx->vulkan_gpus, struct vulkan_gpu, entry )
+    {
+        TRACE( "adding vulkan-only gpu uuid %s, name %s\n", debugstr_guid(&gpu->uuid), debugstr_a(gpu->name));
+        add_gpu( gpu->name, &gpu->pci_id, &gpu->uuid, ctx );
+    }
+}
+
 BOOL update_display_cache( BOOL force )
 {
     static const WCHAR wine_service_station_name[] =
         {'_','_','w','i','n','e','s','e','r','v','i','c','e','_','w','i','n','s','t','a','t','i','o','n',0};
     HWINSTA winstation = NtUserGetProcessWindowStation();
-    struct device_manager_ctx ctx = {0};
+    struct device_manager_ctx ctx = {.vulkan_gpus = LIST_INIT(ctx.vulkan_gpus)};
     UINT status;
     WCHAR name[MAX_PATH];
 
@@ -1953,7 +2026,10 @@ BOOL update_display_cache( BOOL force )
         return TRUE;
     }
 
-    status = update_display_devices( force, &ctx );
+    if (!get_vulkan_gpus( &ctx.vulkan_gpus )) WARN( "Failed to find any vulkan GPU\n" );
+
+    if (!(status = update_display_devices( force, &ctx )))
+        add_vulkan_only_gpus( &ctx );
 
     release_display_manager_ctx( &ctx );
     if (status && status != STATUS_ALREADY_COMPLETE) WARN( "Failed to update display devices, status %#x\n", status );
