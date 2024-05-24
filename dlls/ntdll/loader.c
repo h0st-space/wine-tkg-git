@@ -3130,17 +3130,16 @@ static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *
     ULONG len;
 
     const WCHAR* dll_dir = get_module_path_end(  current_modref->ldr.FullDllName.Buffer);
-    len+= current_modref->ldr.FullDllName.Buffer.Length;
     if (!paths) paths = default_load_path;
     len = wcslen( paths );
 
     if (len < wcslen( system_dir )) len = wcslen( system_dir );
     len += wcslen( search ) + 2;
-    len += wcslen()
+    len+= current_modref->ldr.FullDllName.Length;
     if (!(name = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
         return STATUS_NO_MEMORY;
    
-     ulong mod_path_len = dll_dir - current_modref->ldr.FullDllName.Buffer;
+    ULONG mod_path_len = dll_dir - current_modref->ldr.FullDllName.Buffer;
     memcpy(name,dll_dir,mod_path_len);
     if (mod_path_len && name[mod_path_len - 1] != '\\') name[mod_path_len++] = '\\';
     wcscpy( name + mod_path_len, search );
