@@ -1,0 +1,57 @@
+--- dlls/ntdll/unix/system.c
++++ dlls/ntdll/unix/system.c
+@@ -1158,36 +1158,40 @@ static NTSTATUS create_logical_proc_info( SYSTEM_LOGICAL_PROCESSOR_INFORMATION *
+                 return STATUS_NO_MEMORY;
+             }
+ 
++            unsigned int cpu_id;
++
++            cpu_id = cpu_override.mapping.cpu_count ? cpu_override.mapping.host_cpu_id[i] : i;
++
+             for (j = 0; j < 4; j++)
+             {
+                 CACHE_DESCRIPTOR cache;
+                 ULONG_PTR mask = 0;
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "shared_cpu_map");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "shared_cpu_map");
+                 if(!sysfs_parse_bitmap(name, &mask)) continue;
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "level");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "level");
+                 f = fopen(name, "r");
+                 if(!f) continue;
+                 fscanf(f, "%u", &r);
+                 fclose(f);
+                 cache.Level = r;
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "ways_of_associativity");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "ways_of_associativity");
+                 f = fopen(name, "r");
+                 if(!f) continue;
+                 fscanf(f, "%u", &r);
+                 fclose(f);
+                 cache.Associativity = r;
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "coherency_line_size");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "coherency_line_size");
+                 f = fopen(name, "r");
+                 if(!f) continue;
+                 fscanf(f, "%u", &r);
+                 fclose(f);
+                 cache.LineSize = r;
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "size");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "size");
+                 f = fopen(name, "r");
+                 if(!f) continue;
+                 fscanf(f, "%u%c", &r, &op);
+@@ -1200,7 +1200,7 @@ static NTSTATUS create_logical_proc_info( SYSTEM_LOGICAL_PROCESSOR_INFORMATION *
+                     WARN("unknown cache size %u%c\n", r, op);
+                 cache.Size = (op=='K' ? r*1024 : r);
+ 
+-                snprintf(name, sizeof(name), cache_info, i, j, "type");
++                snprintf(name, sizeof(name), cache_info, cpu_id, j, "type");
+                 f = fopen(name, "r");
+                 if(!f) continue;
+                 fscanf(f, "%s", name);

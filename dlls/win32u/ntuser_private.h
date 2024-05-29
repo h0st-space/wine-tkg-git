@@ -258,6 +258,8 @@ extern LRESULT system_tray_call( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
 /* vulkan.c */
 extern void vulkan_detach_surfaces( struct list *surfaces );
+extern void vulkan_set_parent( HWND hwnd, HWND new_parent, HWND old_parent );
+extern void vulkan_set_region( HWND toplevel, HRGN region );
 
 /* window.c */
 HANDLE alloc_user_handle( struct user_object *ptr, unsigned int type );

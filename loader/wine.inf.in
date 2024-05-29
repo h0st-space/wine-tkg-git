@@ -91,6 +91,7 @@ AddReg=\
     MCI,\
     Misc,\
     OLE,\
+    Packages,\
     Printing,\
     Services, \
     SessionMgr,\
@@ -117,6 +118,7 @@ AddReg=\
     MCI,\
     Misc,\
     OLE,\
+    Packages.ntamd64,\
     Printing,\
     Services, \
     SessionMgr,\
@@ -142,6 +144,7 @@ AddReg=\
     MCI,\
     Misc,\
     OLE,\
+    Packages.ntarm64,\
     Printing,\
     Services, \
     SessionMgr,\
@@ -162,6 +165,7 @@ AddReg=\
     KeyboardLayouts,\
     MCI,\
     Misc,\
+    Packages.wow64,\
     Tapi,\
     VersionInfo,\
     LicenseInformation
@@ -268,6 +272,7 @@ CurrentVersion="Software\Microsoft\Windows\CurrentVersion"
 CurrentVersionNT="Software\Microsoft\Windows NT\CurrentVersion"
 FontSubStr="Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes"
 Control="System\CurrentControlSet\Control"
+Packages="Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\PackageRepository\Packages"
 
 [Classes]
 HKCR,.chm,,2,"chm.file"
@@ -368,7 +373,7 @@ HKCU,%CurrentVersion%\Run,,16
 HKCU,%CurrentVersionNT%\Winlogon,,16
 HKLM,%CurrentVersion%,"CommonFilesDir",,"%16427%"
 HKLM,%CurrentVersion%,"FirstInstallDateTime",1,21,81,7c,23
-HKLM,%CurrentVersion%,"ProductId",,"12345-oem-0000001-54321"
+HKLM,%CurrentVersion%,"ProductId",,"00330-50000-00000-AAOEM"
 HKLM,%CurrentVersion%,"ProgramFilesDir",,"%16422%"
 HKLM,%CurrentVersion%,"ProgramFilesPath",0x20000,"%%ProgramFiles%%"
 HKLM,%CurrentVersion%,"RegisteredOrganization",2,""
@@ -394,7 +399,7 @@ HKLM,%CurrentVersion%\Shell Extensions\Approved,,16
 HKLM,%CurrentVersion%\Time Zones,"SymbolicLinkValue",0x60000,"\Registry\Machine\%CurrentVersionNT%\Time Zones"
 HKLM,%CurrentVersion%\Uninstall,,16
 HKLM,%CurrentVersionNT%,"InstallDate",0x10003,1273299354
-HKLM,%CurrentVersionNT%,"ProductId",,"12345-oem-0000001-54321"
+HKLM,%CurrentVersionNT%,"ProductId",,"00330-50000-00000-AAOEM"
 HKLM,%CurrentVersionNT%,"RegisteredOrganization",2,""
 HKLM,%CurrentVersionNT%,"RegisteredOwner",2,""
 HKLM,%CurrentVersionNT%,"SystemRoot",,"%10%"
@@ -889,6 +894,18 @@ HKLM,SYSTEM\CurrentControlSet\Control\Keyboard Layouts\00120c00,,16
 [OLE]
 HKLM,"Software\Microsoft\OLE","EnableDCOM",,"Y"
 HKLM,"Software\Microsoft\OLE","EnableRemoteConnect",,"N"
+
+[Packages]
+HKLM,"%Packages%\Microsoft.VCLibs.140.00_14.0.29231.0_x86__8wekyb3d8bbwe","Path",0x00020002,"%SystemRoot%\system32"
+
+[Packages.ntamd64]
+HKLM,"%Packages%\Microsoft.VCLibs.140.00_14.0.29231.0_x64__8wekyb3d8bbwe","Path",0x00020002,"%SystemRoot%\system32"
+
+[Packages.wow64]
+HKLM,"%Packages%\Microsoft.VCLibs.140.00_14.0.29231.0_x86__8wekyb3d8bbwe","Path",0x00020002,"%SystemRoot%\syswow64"
+
+[Packages.arm64]
+HKLM,"%Packages%\Microsoft.VCLibs.140.00_14.0.29231.0_arm64__8wekyb3d8bbwe","Path",0x00020002,"%SystemRoot%\system32"
 
 [Printing]
 HKLM,%Control%\Print\Monitors\Local Port,"Driver",2,"localspl.dll"
@@ -2767,7 +2784,7 @@ HKLM,%CurrentVersionNT%,"CurrentMinorVersionNumber",0x10003,0
 HKLM,%CurrentVersionNT%,"CurrentBuild",2,"19043"
 HKLM,%CurrentVersionNT%,"CurrentBuildNumber",2,"19043"
 HKLM,%CurrentVersionNT%,"CurrentType",2,"Multiprocessor Free"
-HKLM,%CurrentVersionNT%,"DigitalProductId",1,00,00,00,00,00,00,00,00,00,00,00,\
+HKLM,%CurrentVersionNT%,"DigitalProductId",2,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
@@ -2775,8 +2792,10 @@ HKLM,%CurrentVersionNT%,"DigitalProductId",1,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
 HKLM,%CurrentVersionNT%,"EditionId",2,"Professional"
+HKLM,%CurrentVersionNT%,"DisplayVersion",2,"21H1"
 HKLM,%CurrentVersionNT%,"InstallationType",2,"Client"
 HKLM,%CurrentVersionNT%,"ProductName",2,"Windows 10 Pro"
+HKLM,%CurrentVersionNT%,"ReleaseId",,"2009"
 HKLM,%Control%\ProductOptions,"ProductType",2,"WinNT"
 HKLM,%Control%\Windows,"CSDVersion",0x10003,0
 HKLM,%Control%\Session Manager\Environment,"OS",2,"Windows_NT"
@@ -2856,6 +2875,33 @@ HKLM,Software\Wine\LicenseInformation,"Shell-InBoxGames-Shanghai-EnableGame",0x1
 HKLM,Software\Wine\LicenseInformation,"Shell-InBoxGames-Solitaire-EnableGame",0x10001,0x00000001
 HKLM,Software\Wine\LicenseInformation,"Shell-InBoxGames-SpiderSolitaire-EnableGame",0x10001,0x00000001
 HKLM,Software\Wine\LicenseInformation,"Shell-PremiumInBoxGames-Chess-EnableGame",0x10001,0x00000001
+;;Likely want *80 and *90 too, but those require removing Wine's manifest files.
+HKCU,Software\Wine\DllOverrides,"atl100",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcp100",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcr100",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"vcomp100",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"atl110",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcp110",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcr110",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"vcomp110",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"atl120",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcp120",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcr120",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"vcomp120",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-conio-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-heap-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-locale-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-math-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-runtime-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-stdio-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"api-ms-win-crt-time-l1-1-0",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"atl140",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"concrt140",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcp140",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"msvcr140",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"ucrtbase",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"vcomp140",0x2,"native,builtin"
+HKCU,Software\Wine\DllOverrides,"vcruntime140",0x2,"native,builtin"
 
 [ColorFiles]
 srgb color space profile.icm,"@%11%\mscms.dll,-1"
