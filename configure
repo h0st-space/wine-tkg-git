@@ -994,6 +994,7 @@ enable_atl80
 enable_atl90
 enable_atlthunk
 enable_atmlib
+enable_audioses
 enable_authz
 enable_avicap32
 enable_avifil32
@@ -1639,6 +1640,7 @@ enable_po
 enable_arp
 enable_aspnet_regiis
 enable_attrib
+enable_belauncher
 enable_cabarc
 enable_cacls
 enable_certutil
@@ -4414,7 +4416,7 @@ fi
 # Check whether --with-opencl was given.
 if test ${with_opencl+y}
 then :
-  withval=$with_opencl; if test "x$withval" = "xno"; then ac_cv_header_CL_cl_h=no; ac_cv_header_OpenCL_opencl_h=no; fi
+  withval=$with_opencl; if test "x$withval" = "xno"; then ac_cv_header_CL_cl_h=no; ac_cv_header_CL_opencl_h=no; fi
 fi
 
 
@@ -8001,12 +8003,6 @@ then :
   printf "%s\n" "#define HAVE_EGL_EGL_H 1" >>confdefs.h
 
 fi
-ac_fn_c_check_header_compile "$LINENO" "OpenCL/opencl.h" "ac_cv_header_OpenCL_opencl_h" "$ac_includes_default"
-if test "x$ac_cv_header_OpenCL_opencl_h" = xyes
-then :
-  printf "%s\n" "#define HAVE_OPENCL_OPENCL_H 1" >>confdefs.h
-
-fi
 ac_fn_c_check_header_compile "$LINENO" "arpa/inet.h" "ac_cv_header_arpa_inet_h" "$ac_includes_default"
 if test "x$ac_cv_header_arpa_inet_h" = xyes
 then :
@@ -8485,6 +8481,14 @@ ac_fn_c_check_header_compile "$LINENO" "valgrind/valgrind.h" "ac_cv_header_valgr
 if test "x$ac_cv_header_valgrind_valgrind_h" = xyes
 then :
   printf "%s\n" "#define HAVE_VALGRIND_VALGRIND_H 1" >>confdefs.h
+
+fi
+
+ac_fn_c_check_header_compile "$LINENO" "CL/opencl.h" "ac_cv_header_CL_opencl_h" "$ac_includes_default"
+if test "x$ac_cv_header_CL_opencl_h" = xyes
+then :
+
+printf "%s\n" "#define HAVE_OPENCL_OPENCL_H 1" >>confdefs.h
 
 fi
 
@@ -9730,7 +9734,7 @@ fi
 
         enable_winecoreaudio_drv=${enable_winecoreaudio_drv:-yes}
     fi
-    if test "$ac_cv_header_OpenCL_opencl_h" = "yes"
+    if test "$ac_cv_header_CL_opencl_h" = "yes"
     then
         OPENCL_LIBS="-framework OpenCL"
 
@@ -23243,6 +23247,7 @@ wine_fn_config_makefile dlls/atl90 enable_atl90
 wine_fn_config_makefile dlls/atlthunk enable_atlthunk
 wine_fn_config_makefile dlls/atlthunk/tests enable_tests
 wine_fn_config_makefile dlls/atmlib enable_atmlib
+wine_fn_config_makefile dlls/audioses enable_audioses
 wine_fn_config_makefile dlls/authz enable_authz
 wine_fn_config_makefile dlls/avicap32 enable_avicap32
 wine_fn_config_makefile dlls/avifil32 enable_avifil32
@@ -24231,6 +24236,7 @@ wine_fn_config_makefile po enable_po
 wine_fn_config_makefile programs/arp enable_arp
 wine_fn_config_makefile programs/aspnet_regiis enable_aspnet_regiis
 wine_fn_config_makefile programs/attrib enable_attrib
+wine_fn_config_makefile programs/belauncher enable_belauncher
 wine_fn_config_makefile programs/cabarc enable_cabarc
 wine_fn_config_makefile programs/cacls enable_cacls
 wine_fn_config_makefile programs/certutil enable_certutil
