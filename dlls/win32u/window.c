@@ -462,6 +462,7 @@ HWND WINAPI NtUserSetParent( HWND hwnd, HWND parent )
     context = set_thread_dpi_awareness_context( get_window_dpi_awareness_context( hwnd ));
 
     user_driver->pSetParent( full_handle, parent, old_parent );
+    vulkan_set_parent( full_handle, parent, old_parent );
 
     winpos.hwnd = hwnd;
     winpos.hwndInsertAfter = HWND_TOP;
@@ -1761,10 +1762,12 @@ static void update_surface_region( HWND hwnd )
     if (status) goto done;
 
     win->surface->funcs->set_region( win->surface, region );
-    if (region) NtGdiDeleteObjectApp( region );
 
 done:
     release_win_ptr( win );
+
+    vulkan_set_region( hwnd, region );
+    if (region) NtGdiDeleteObjectApp( region );
 }
 
 /***********************************************************************
@@ -3232,8 +3235,11 @@ static BOOL fixup_swp_flags( WINDOWPOS *winpos, const RECT *old_window_rect, int
     if (winpos->cy < 0) winpos->cy = 0;
     else if (winpos->cy > 32767) winpos->cy = 32767;
 
-    parent = NtUserGetAncestor( winpos->hwnd, GA_PARENT );
-    if (!is_window_visible( parent )) winpos->flags |= SWP_NOREDRAW;
+    if (win->dwStyle & WS_CHILD)
+    {
+        parent = NtUserGetAncestor( winpos->hwnd, GA_PARENT );
+        if (!is_window_visible( parent )) winpos->flags |= SWP_NOREDRAW;
+    }
 
     if (win->dwStyle & WS_VISIBLE) winpos->flags &= ~SWP_SHOWWINDOW;
     else
@@ -4336,8 +4342,8 @@ static BOOL show_window( HWND hwnd, INT cmd )
     }
     swp = new_swp;
 
-    parent = NtUserGetAncestor( hwnd, GA_PARENT );
-    if (parent && !is_window_visible( parent ) && !(swp & SWP_STATECHANGED))
+        if ((style & WS_CHILD) && (parent = NtUserGetAncestor( hwnd, GA_PARENT )) &&
+        !is_window_visible( parent ) && !(swp & SWP_STATECHANGED))
     {
         /* if parent is not visible simply toggle WS_VISIBLE and return */
         if (show_flag) set_window_style( hwnd, WS_VISIBLE, 0 );
@@ -4540,8 +4546,7 @@ BOOL WINAPI NtUserFlashWindowEx( FLASHWINFO *info )
         if (!win || win == WND_OTHER_PROCESS || win == WND_DESKTOP) return FALSE;
         hwnd = win->obj.handle;  /* make it a full handle */
 
-        if (info->dwFlags) wparam = !(win->flags & WIN_NCACTIVATED);
-        else wparam = (hwnd == NtUserGetForegroundWindow());
+        wparam = (win->flags & WIN_NCACTIVATED) != 0;
 
         release_win_ptr( win );
 
@@ -4549,7 +4554,7 @@ BOOL WINAPI NtUserFlashWindowEx( FLASHWINFO *info )
             send_message( hwnd, WM_NCACTIVATE, wparam, 0 );
 
         user_driver->pFlashWindowEx( info );
-        return wparam;
+        return (info->dwFlags & FLASHW_CAPTION) ? TRUE : wparam;
     }
 }
 

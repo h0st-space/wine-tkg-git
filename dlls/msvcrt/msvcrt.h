@@ -33,6 +33,7 @@
 #undef strncpy
 #undef wcsncpy
 
+extern BOOL erms_supported;
 extern BOOL sse2_supported;
 
 #define DBL80_MAX_10_EXP 4932
