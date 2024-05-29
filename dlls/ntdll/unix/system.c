@@ -2956,7 +2956,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
         len = peb->NumberOfProcessors * sizeof(SYSTEM_INTERRUPT_INFORMATION);
         if (size >= len)
         {
-            if (!info) ret = STATUS_ACCESS_VIOLATION;
+            if (!info || !virtual_check_buffer_for_write( info, len )) ret = STATUS_ACCESS_VIOLATION;
             else
             {
 #ifdef HAVE_GETRANDOM
