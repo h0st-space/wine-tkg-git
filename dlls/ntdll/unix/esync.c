@@ -29,17 +29,14 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
-#ifdef HAVE_POLL_H
-#include <poll.h>
-#endif
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <poll.h>
 #ifdef HAVE_SYS_STAT_H
 # include <sys/stat.h>
 #endif
+#include <poll.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -624,7 +621,7 @@ NTSTATUS esync_pulse_event( HANDLE handle )
 
     /* Try to give other threads a chance to wake up. Hopefully erring on this
      * side is the better thing to do... */
-    usleep(0);
+    NtYieldExecution();
 
     read( obj->fd, &value, sizeof(value) );
 
@@ -1166,22 +1163,10 @@ tryagain:
                         {
                             /* We were too slow. Put everything back. */
                             value = 1;
-                            for (j = i - 1; j >= 0; j--)
+                            for (j = i; j >= 0; j--)
                             {
-                                struct esync *obj = objs[j];
-
-                                if (obj->type == ESYNC_MUTEX)
-                                {
-                                    struct mutex *mutex = obj->shm;
-
-                                    if (mutex->tid == GetCurrentThreadId())
-                                        continue;
-                                }
-                                if (write( fds[j].fd, &value, sizeof(value) ) == -1)
-                                {
-                                    ERR("write failed.\n");
+                                if (write( obj->fd, &value, sizeof(value) ) == -1)
                                     return errno_to_status( errno );
-                                }
                             }
 
                             goto tryagain;  /* break out of two loops and a switch */

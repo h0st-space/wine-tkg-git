@@ -1,20 +1,24 @@
-# Last wine-tkg-fsync-git configuration - Fri Jun  7 10:39:29 AM CEST 2024 :
+# Last wine-tkg-staging-fsync-git configuration - Fri Jun  7 02:40:22 PM CEST 2024 :
 
 Local cfg files used
 
 Wine (plain) version: 9.10.r126.g9f6e44fd9ca
+Using wine-staging patchset (version 9.10.r7.g88e86a23)
 
-Using esync patchset (version ce79346)
+Disabled the local Esync patchset to use Staging impl instead.
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
 
 Done applying backports hotfixes (if any) - list available in prepare.log
 Done applying reverting hotfixes (if any) - list available in prepare.log
 
-esync-unix-mainline.patch -- ( Using Esync (unix, mainline) patchset )
-fsync-unix-mainline.patch -- ( Applied fsync patches (unix, mainline) )
+CSMT-toggle.patch -- ( Applied CSMT toggle logic patch )
+
+Staging overrides, if any: 
+
+fsync-unix-staging.patch -- ( Applied fsync patches (unix, staging) )
 fsync_futex_waitv.patch -- ( Applied patches for fsync to support futex_waitv )
 
-LAA-unix.patch -- ( Applied large address aware override support (legacy) )
+LAA-unix-staging.patch -- ( Applied large address aware override support (legacy) )
 
 msvcrt_nativebuiltin_mainline.patch -- ( Enforce msvcrt Dlls to native then builtin (from Proton) )
 josh-flat-theme.patch -- ( Add Josh's better-theme )
@@ -27,4 +31,4 @@ Applied hotfix a608ef1.mypatch
 Applied hotfix opencl-fixup.mypatch
 Applied hotfix nostale_mouse_fix.mypatch
 
-wine-tkg.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )
+wine-tkg-staging.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )

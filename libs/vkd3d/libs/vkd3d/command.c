@@ -6135,7 +6135,7 @@ static struct d3d12_command_list *unsafe_impl_from_ID3D12CommandList(ID3D12Comma
     if (!iface)
         return NULL;
     assert(iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl);
-    return CONTAINING_RECORD(iface, struct d3d12_command_list, ID3D12GraphicsCommandList5_iface);
+    return CONTAINING_RECORD((ID3D12GraphicsCommandList5*)iface, struct d3d12_command_list, ID3D12GraphicsCommandList5_iface);
 }
 
 static HRESULT d3d12_command_list_init(struct d3d12_command_list *list, struct d3d12_device *device,
