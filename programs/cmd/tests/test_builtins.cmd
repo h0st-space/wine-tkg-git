@@ -2636,12 +2636,6 @@ echo echo +++>> tmp.cmd
 echo ftype footype>> tmp.cmd
 cmd /c tmp.cmd
 
-echo --- testing association
-ftype footype=cmd.exe /c "echo '%%1'"
-echo dummy>test.foo
-test.foo
-del test.foo
-
 echo --- resetting association
 assoc .foo=
 
@@ -2673,9 +2667,6 @@ echo .foo=footype
 echo footype=foo_opencmd
 echo +++
 echo footype=foo_opencmd
-echo --- testing association
-echo footype=cmd.exe /c "echo '%%1'"
-echo Skipped as not enough permissions
 echo --- resetting association
 echo original value
 
@@ -3319,6 +3310,8 @@ should_not_exist 2> nul > nul
 echo %ErrorLevel%
 rem nt 4.0 doesn't really support a way of setting errorlevel, so this is weak
 rem See http://www.robvanderwoude.com/exit.php
+call :setError -9999
+echo %ErrorLevel%
 call :setError 1
 echo %ErrorLevel%
 if errorlevel 2 echo errorlevel too high, bad

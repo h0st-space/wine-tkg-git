@@ -222,7 +222,6 @@ struct wined3d_d3d_info
     uint32_t wined3d_creation_flags;
     uint32_t emulated_flatshading : 1;
     uint32_t ffp_alpha_test : 1;
-    uint32_t vs_clipping : 1;
     uint32_t shader_double_precision : 1;
     uint32_t shader_output_interpolation : 1;
     uint32_t viewport_array_index_any_shader : 1;
@@ -478,7 +477,6 @@ struct wined3d_settings
     unsigned int sample_count;
     BOOL check_float_constants;
     unsigned int strict_shader_math;
-    unsigned int multiply_special;
     unsigned int max_sm_vs;
     unsigned int max_sm_hs;
     unsigned int max_sm_ds;
@@ -1403,8 +1401,6 @@ BOOL shader_get_stream_output_register_info(const struct wined3d_shader *shader,
 
 typedef void (*SHADER_HANDLER)(const struct wined3d_shader_instruction *);
 
-#define WINED3D_SHADER_CAP_VS_CLIPPING              0x00000001u
-#define WINED3D_SHADER_CAP_SRGB_WRITE               0x00000002u
 #define WINED3D_SHADER_CAP_DOUBLE_PRECISION         0x00000004u
 #define WINED3D_SHADER_CAP_OUTPUT_INTERPOLATION     0x00000008u
 #define WINED3D_SHADER_CAP_FULL_FFP_VARYINGS        0x00000010u
@@ -1556,8 +1552,6 @@ extern const struct wined3d_shader_backend_ops glsl_shader_backend;
 extern const struct wined3d_shader_backend_ops none_shader_backend;
 
 const struct wined3d_shader_backend_ops *wined3d_spirv_shader_backend_init_vk(void);
-
-#define GL_EXTCALL(f) (gl_info->gl_ops.ext.p_##f)
 
 #define D3DCOLOR_B_R(dw) (((dw) >> 16) & 0xff)
 #define D3DCOLOR_B_G(dw) (((dw) >>  8) & 0xff)
@@ -1912,34 +1906,29 @@ struct wined3d_context
     DWORD update_compute_shader_resource_bindings : 1;
     DWORD update_unordered_access_view_bindings : 1;
     DWORD update_compute_unordered_access_view_bindings : 1;
+    DWORD update_primitive_type : 1;
     DWORD last_was_rhw : 1; /* True iff last draw_primitive was in xyzrhw mode. */
-    DWORD last_was_pshader : 1;
     DWORD last_was_vshader : 1;
     DWORD last_was_diffuse : 1;
     DWORD last_was_specular : 1;
     DWORD last_was_normal : 1;
+    DWORD last_was_point_size : 1;
     DWORD last_was_ffp_blit : 1;
     DWORD last_was_blit : 1;
-    DWORD last_was_ckey : 1;
     DWORD last_was_dual_source_blend : 1;
-    DWORD texShaderBumpMap : 8;         /* WINED3D_MAX_FFP_TEXTURES, 8 */
     DWORD lowest_disabled_stage : 4;    /* Max WINED3D_MAX_FFP_TEXTURES, 8 */
 
     DWORD fixed_function_usage_map : 8; /* WINED3D_MAX_FFP_TEXTURES, 8 */
-    DWORD use_immediate_mode_draw : 1;
     DWORD uses_uavs : 1;
     DWORD uses_fbo_attached_resources : 1;
     DWORD transform_feedback_active : 1;
     DWORD transform_feedback_paused : 1;
-    DWORD fog_coord : 1;
     DWORD current : 1;
     DWORD destroyed : 1;
     DWORD destroy_delayed : 1;
-    DWORD namedArraysLoaded : 1;
-    DWORD update_primitive_type : 1;
-    DWORD update_patch_vertex_count : 1;
     DWORD update_multisample_state : 1;
-    DWORD padding : 11;
+    DWORD update_patch_vertex_count : 1;
+    DWORD padding : 23;
 
     DWORD clip_distance_mask : 8; /* WINED3D_MAX_CLIP_DISTANCES, 8 */
 
@@ -1949,7 +1938,6 @@ struct wined3d_context
 
 
     void *shader_backend_data;
-    void *fragment_pipe_data;
 
     struct wined3d_stream_info stream_info;
 
@@ -2093,8 +2081,6 @@ struct wined3d_light_info
     /* Converted parms to speed up swapping lights */
     struct wined3d_vec4 position;
     struct wined3d_vec4 direction;
-    float exponent;
-    float cutoff;
 
     struct rb_entry entry;
     struct list changed_entry;
@@ -2672,9 +2658,8 @@ struct texture_stage_op
 struct ffp_frag_settings
 {
     struct texture_stage_op op[WINED3D_MAX_FFP_TEXTURES];
-    enum wined3d_ffp_ps_fog_mode fog;
+    unsigned char fog; /* enum wined3d_ffp_ps_fog_mode */
     unsigned char sRGB_write;
-    unsigned char emul_clipplanes;
     unsigned char texcoords_initialized;
     unsigned char color_key_enabled : 1;
     unsigned char pointsprite : 1;
@@ -2694,8 +2679,8 @@ int wined3d_ffp_vertex_program_key_compare(const void *key, const struct wine_rb
 
 extern const struct wined3d_parent_ops wined3d_null_parent_ops;
 
-void wined3d_ffp_get_fs_settings(const struct wined3d_context *context, const struct wined3d_state *state,
-        struct ffp_frag_settings *settings, BOOL ignore_textype);
+void wined3d_ffp_get_fs_settings(const struct wined3d_context *context,
+        const struct wined3d_state *state, struct ffp_frag_settings *settings);
 const struct ffp_frag_desc *find_ffp_frag_shader(const struct wine_rb_tree *fragment_shaders,
         const struct ffp_frag_settings *settings);
 void add_ffp_frag_shader(struct wine_rb_tree *shaders, struct ffp_frag_desc *desc);
@@ -2740,7 +2725,8 @@ struct wined3d_ffp_vs_settings
     DWORD ortho_fog       : 1;
     DWORD flatshading     : 1;
     DWORD specular_enable : 1;
-    DWORD padding         : 17;
+    DWORD diffuse         : 1;
+    DWORD padding         : 16;
 
     DWORD swizzle_map; /* MAX_ATTRIBS, 32 */
 
@@ -3506,7 +3492,12 @@ struct wined3d_vertex_declaration
     struct wined3d_vertex_declaration_element *elements;
     unsigned int element_count;
 
-    BOOL position_transformed;
+    bool position_transformed;
+    bool point_size;
+    bool diffuse;
+    bool specular;
+    bool normal;
+    uint8_t texcoords;
 };
 
 bool wined3d_light_state_enable_light(struct wined3d_light_state *state, const struct wined3d_d3d_info *d3d_info,
@@ -4639,21 +4630,22 @@ static inline void wined3d_not_from_cs(const struct wined3d_cs *cs)
     assert(cs->thread_id != GetCurrentThreadId());
 }
 
-static inline enum wined3d_material_color_source validate_material_colour_source(WORD use_map,
-        enum wined3d_material_color_source source)
+static inline enum wined3d_material_color_source validate_material_colour_source(
+        const struct wined3d_vertex_declaration *vdecl, enum wined3d_material_color_source source)
 {
-    if (source == WINED3D_MCS_COLOR1 && use_map & (1u << WINED3D_FFP_DIFFUSE))
+    if (source == WINED3D_MCS_COLOR1 && vdecl->diffuse)
         return source;
-    if (source == WINED3D_MCS_COLOR2 && use_map & (1u << WINED3D_FFP_SPECULAR))
+    if (source == WINED3D_MCS_COLOR2 && vdecl->specular)
         return source;
     return WINED3D_MCS_MATERIAL;
 }
 
 static inline void wined3d_get_material_colour_source(enum wined3d_material_color_source *diffuse,
         enum wined3d_material_color_source *emissive, enum wined3d_material_color_source *ambient,
-        enum wined3d_material_color_source *specular, const struct wined3d_state *state,
-        const struct wined3d_stream_info *si)
+        enum wined3d_material_color_source *specular, const struct wined3d_state *state)
 {
+    const struct wined3d_vertex_declaration *vdecl = state->vertex_declaration;
+
     if (!state->render_states[WINED3D_RS_LIGHTING])
     {
         *diffuse = WINED3D_MCS_COLOR1;
@@ -4670,10 +4662,10 @@ static inline void wined3d_get_material_colour_source(enum wined3d_material_colo
         return;
     }
 
-    *diffuse = validate_material_colour_source(si->use_map, state->render_states[WINED3D_RS_DIFFUSEMATERIALSOURCE]);
-    *emissive = validate_material_colour_source(si->use_map, state->render_states[WINED3D_RS_EMISSIVEMATERIALSOURCE]);
-    *ambient = validate_material_colour_source(si->use_map, state->render_states[WINED3D_RS_AMBIENTMATERIALSOURCE]);
-    *specular = validate_material_colour_source(si->use_map, state->render_states[WINED3D_RS_SPECULARMATERIALSOURCE]);
+    *diffuse = validate_material_colour_source(vdecl, state->render_states[WINED3D_RS_DIFFUSEMATERIALSOURCE]);
+    *emissive = validate_material_colour_source(vdecl, state->render_states[WINED3D_RS_EMISSIVEMATERIALSOURCE]);
+    *ambient = validate_material_colour_source(vdecl, state->render_states[WINED3D_RS_AMBIENTMATERIALSOURCE]);
+    *specular = validate_material_colour_source(vdecl, state->render_states[WINED3D_RS_SPECULARMATERIALSOURCE]);
 }
 
 static inline void wined3d_vec4_transform(struct wined3d_vec4 *dst,

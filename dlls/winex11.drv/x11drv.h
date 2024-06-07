@@ -227,7 +227,6 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
                           const RECT *top_rect, DWORD flags );
 extern void X11DRV_ReleaseDC( HWND hwnd, HDC hdc );
 extern BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update );
-extern void X11DRV_SetActiveWindow( HWND hwnd );
 extern void X11DRV_SetCapture( HWND hwnd, UINT flags );
 extern void X11DRV_SetDesktopWindow( HWND hwnd );
 extern void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha,
@@ -241,8 +240,8 @@ extern UINT X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
 extern LRESULT X11DRV_SysCommand( HWND hwnd, WPARAM wparam, LPARAM lparam );
 extern LRESULT X11DRV_ClipboardWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
 extern void X11DRV_UpdateClipboard(void);
-extern BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
-                                        const RECT *window_rect );
+extern BOOL X11DRV_CreateLayeredWindow( HWND hwnd, const RECT *window_rect, COLORREF color_key,
+                                        struct window_surface **surface );
 extern LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
 extern BOOL X11DRV_WindowPosChanging( HWND hwnd, HWND insert_after, UINT swp_flags,
                                       const RECT *window_rect, const RECT *client_rect, RECT *visible_rect,
@@ -253,7 +252,6 @@ extern void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flag
                                      struct window_surface *surface );
 extern BOOL X11DRV_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param,
                                          UINT flags );
-extern void X11DRV_UpdateCandidatePos( HWND hwnd, const RECT *caret_rect );
 extern void X11DRV_ThreadDetach(void);
 
 /* X11 driver internal functions */
@@ -267,7 +265,7 @@ extern Pixmap create_pixmap_from_image( HDC hdc, const XVisualInfo *vis, const B
                                         const struct gdi_image_bits *bits, UINT coloruse );
 extern DWORD get_pixmap_image( Pixmap pixmap, int width, int height, const XVisualInfo *vis,
                                BITMAPINFO *info, struct gdi_image_bits *bits );
-extern struct window_surface *create_surface( Window window, const XVisualInfo *vis, const RECT *rect,
+extern struct window_surface *create_surface( HWND hwnd, Window window, const XVisualInfo *vis, const RECT *rect,
                                               COLORREF color_key, BOOL use_alpha );
 extern void set_surface_color_key( struct window_surface *window_surface, COLORREF color_key );
 extern HRGN expose_surface( struct window_surface *window_surface, const RECT *rect );
@@ -378,7 +376,6 @@ struct x11drv_thread_data
     Display *display;
     XEvent  *current_event;        /* event currently being processed */
     HWND     grab_hwnd;            /* window that currently grabs the mouse */
-    HWND     active_window;        /* active window */
     HWND     last_focus;           /* last window that had focus */
     HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
     XIM      xim;                  /* input method */
@@ -392,7 +389,6 @@ struct x11drv_thread_data
     XIValuatorClassInfo x_valuator;
     XIValuatorClassInfo y_valuator;
     int      xinput2_pointer;      /* XInput2 master pointer device id */
-    int      xinput2_rawinput;     /* XInput2 rawinput-only thread */
 #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
 };
 
@@ -438,8 +434,6 @@ extern BOOL use_take_focus;
 extern BOOL use_primary_selection;
 extern BOOL use_system_cursors;
 extern BOOL grab_fullscreen;
-extern int keyboard_layout;
-extern BOOL keyboard_scancode_detect;
 extern BOOL usexcomposite;
 extern BOOL managed_mode;
 extern BOOL decorated_mode;
@@ -480,7 +474,6 @@ enum x11drv_atoms
     XATOM__ICC_PROFILE,
     XATOM__KDE_NET_WM_STATE_SKIP_SWITCHER,
     XATOM__MOTIF_WM_HINTS,
-    XATOM__NET_ACTIVE_WINDOW,
     XATOM__NET_STARTUP_INFO_BEGIN,
     XATOM__NET_STARTUP_INFO,
     XATOM__NET_SUPPORTED,
@@ -587,7 +580,6 @@ enum x11drv_window_messages
 {
     WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
     WM_X11DRV_SET_WIN_REGION,
-    WM_X11DRV_DESKTOP_RESIZED,
     WM_X11DRV_DELETE_TAB,
     WM_X11DRV_ADD_TAB
 };
@@ -655,7 +647,6 @@ extern void read_net_wm_states( Display *display, struct x11drv_win_data *data )
 extern void update_net_wm_states( struct x11drv_win_data *data );
 extern void make_window_embedded( struct x11drv_win_data *data );
 extern Window create_client_window( HWND hwnd, const XVisualInfo *visual, Colormap colormap );
-extern void attach_client_window( struct x11drv_win_data *data, Window client_window );
 extern void detach_client_window( struct x11drv_win_data *data, Window client_window );
 extern void destroy_client_window( HWND hwnd, Window client_window );
 extern void set_window_visual( struct x11drv_win_data *data, const XVisualInfo *vis, BOOL use_alpha );
@@ -679,6 +670,7 @@ extern XContext winContext;
 /* X context to associate an X cursor to a Win32 cursor handle */
 extern XContext cursor_context;
 
+extern UINT get_win_monitor_dpi( HWND hwnd );
 extern BOOL is_current_process_focused(void);
 extern void X11DRV_SetFocus( HWND hwnd );
 extern void set_window_cursor( Window window, HCURSOR handle );
@@ -686,7 +678,6 @@ extern void retry_grab_clipping_window(void);
 extern void ungrab_clipping_window(void);
 extern void move_resize_window( HWND hwnd, int dir );
 extern void X11DRV_InitKeyboard( Display *display );
-extern void X11DRV_InitMouse( Display *display );
 extern BOOL process_events( Display *display, Bool (*filter)(Display*, XEvent*, XPointer), ULONG_PTR arg );
 extern BOOL X11DRV_ProcessEvents( DWORD mask );
 extern HWND *build_hwnd_list(void);
@@ -703,11 +694,6 @@ extern RECT get_work_area( const RECT *monitor_rect );
 extern BOOL xinerama_get_fullscreen_monitors( const RECT *rect, long *indices );
 extern void xinerama_init( unsigned int width, unsigned int height );
 extern void init_recursive_mutex( pthread_mutex_t *mutex );
-
-/* keyboard.c */
-
-extern int x11drv_find_keyboard_layout( const WCHAR *layout );
-extern WCHAR *x11drv_get_keyboard_layout_list( DWORD *size );
 
 #define DEPTH_COUNT 3
 extern const unsigned int *depths;
@@ -765,7 +751,6 @@ struct x11drv_settings_handler
 extern void X11DRV_Settings_SetHandler(const struct x11drv_settings_handler *handler);
 
 extern void X11DRV_init_desktop( Window win, unsigned int width, unsigned int height );
-extern void X11DRV_resize_desktop(void);
 extern BOOL is_virtual_desktop(void);
 extern BOOL is_desktop_fullscreen(void);
 extern BOOL is_detached_mode(const DEVMODEW *);

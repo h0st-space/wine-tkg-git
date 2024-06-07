@@ -821,10 +821,6 @@ static BOOL nulldrv_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
                         hdc, rect.left - dx, rect.top - dy, SRCCOPY, 0, 0 );
 }
 
-static void nulldrv_SetActiveWindow( HWND hwnd )
-{
-}
-
 static void nulldrv_SetCapture( HWND hwnd, UINT flags )
 {
 }
@@ -871,10 +867,16 @@ static LRESULT nulldrv_SysCommand( HWND hwnd, WPARAM wparam, LPARAM lparam )
     return -1;
 }
 
-static BOOL nulldrv_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
-                                         const RECT *window_rect )
+static BOOL nulldrv_CreateLayeredWindow( HWND hwnd, const RECT *window_rect, COLORREF color_key,
+                                         struct window_surface **surface )
 {
+    *surface = NULL;
     return TRUE;
+}
+
+static void nulldrv_UpdateLayeredWindow( HWND hwnd, const RECT *window_rect, COLORREF color_key,
+                                         BYTE alpha, UINT flags )
+{
 }
 
 static LRESULT nulldrv_WindowMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
@@ -909,11 +911,6 @@ static UINT nulldrv_VulkanInit( UINT version, void *vulkan_handle, const struct 
 static struct opengl_funcs *nulldrv_wine_get_wgl_driver( UINT version )
 {
     return (void *)-1;
-}
-
-static void nulldrv_UpdateCandidatePos( HWND hwnd, const RECT *caret_rect )
-{
-
 }
 
 static void nulldrv_ThreadDetach( void )
@@ -1217,10 +1214,16 @@ static void loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
     load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
 }
 
-static BOOL loaderdrv_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
-                                           const RECT *window_rect )
+static BOOL loaderdrv_CreateLayeredWindow( HWND hwnd, const RECT *window_rect, COLORREF color_key,
+                                           struct window_surface **surface )
 {
-    return load_driver()->pUpdateLayeredWindow( hwnd, info, window_rect );
+    return load_driver()->pCreateLayeredWindow( hwnd, window_rect, color_key, surface );
+}
+
+static void loaderdrv_UpdateLayeredWindow( HWND hwnd, const RECT *window_rect, COLORREF color_key,
+                                           BYTE alpha, UINT flags )
+{
+    load_driver()->pUpdateLayeredWindow( hwnd, window_rect, color_key, alpha, flags );
 }
 
 static UINT loaderdrv_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs )
@@ -1276,7 +1279,6 @@ static const struct user_driver_funcs lazy_load_driver =
     nulldrv_ProcessEvents,
     nulldrv_ReleaseDC,
     nulldrv_ScrollDC,
-    nulldrv_SetActiveWindow,
     nulldrv_SetCapture,
     loaderdrv_SetDesktopWindow,
     nulldrv_SetFocus,
@@ -1288,6 +1290,7 @@ static const struct user_driver_funcs lazy_load_driver =
     nulldrv_SetWindowText,
     nulldrv_ShowWindow,
     nulldrv_SysCommand,
+    loaderdrv_CreateLayeredWindow,
     loaderdrv_UpdateLayeredWindow,
     nulldrv_WindowMessage,
     nulldrv_WindowPosChanging,
@@ -1298,7 +1301,6 @@ static const struct user_driver_funcs lazy_load_driver =
     loaderdrv_VulkanInit,
     /* opengl support */
     nulldrv_wine_get_wgl_driver,
-    nulldrv_UpdateCandidatePos,
     /* thread management */
     nulldrv_ThreadDetach,
 };
@@ -1364,7 +1366,6 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(ProcessEvents);
     SET_USER_FUNC(ReleaseDC);
     SET_USER_FUNC(ScrollDC);
-    SET_USER_FUNC(SetActiveWindow);
     SET_USER_FUNC(SetCapture);
     SET_USER_FUNC(SetDesktopWindow);
     SET_USER_FUNC(SetFocus);
@@ -1376,6 +1377,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(SetWindowText);
     SET_USER_FUNC(ShowWindow);
     SET_USER_FUNC(SysCommand);
+    SET_USER_FUNC(CreateLayeredWindow);
     SET_USER_FUNC(UpdateLayeredWindow);
     SET_USER_FUNC(WindowMessage);
     SET_USER_FUNC(WindowPosChanging);
@@ -1383,7 +1385,6 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(SystemParametersInfo);
     SET_USER_FUNC(VulkanInit);
     SET_USER_FUNC(wine_get_wgl_driver);
-    SET_USER_FUNC(UpdateCandidatePos);
     SET_USER_FUNC(ThreadDetach);
 #undef SET_USER_FUNC
 

@@ -100,7 +100,6 @@ static void process_destroy( struct object *obj );
 static int process_get_esync_fd( struct object *obj, enum esync_type *type );
 static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static void terminate_process( struct process *process, struct thread *skip, int exit_code );
-static void set_process_affinity( struct process *process, affinity_t affinity );
 
 static const struct object_ops process_ops =
 {
@@ -698,7 +697,6 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     list_init( &process->rawinput_entry );
     process->esync_fd        = -1;
     process->fsync_idx       = 0;
-    process->cpu_override.cpu_count = 0;
     list_init( &process->kernel_object );
     list_init( &process->thread_list );
     list_init( &process->locks );
@@ -748,12 +746,6 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     }
     if (!process->handles || !process->token) goto error;
     process->session_id = token_get_session_id( process->token );
-
-    /* Assign a high security label to the token. The default would be medium
-     * but Wine provides admin access to all applications right now so high
-     * makes more sense for the time being. */
-    if (!token_assign_label( process->token, &high_label_sid ))
-        goto error;
 
     if (do_fsync())
         process->fsync_idx = fsync_alloc_shm( 0, 0 );
@@ -1453,8 +1445,6 @@ DECL_HANDLER(get_startup_info)
 DECL_HANDLER(init_process_done)
 {
     struct process *process = current->process;
-    const struct cpu_topology_override *cpu_override = get_req_data();
-    unsigned int have_cpu_override = get_req_data_size() / sizeof(*cpu_override);
 
     if (is_process_init_done(process))
     {
@@ -1476,9 +1466,6 @@ DECL_HANDLER(init_process_done)
         process->idle_event = create_event( NULL, NULL, 0, 1, 0, NULL );
     if (process->debug_obj) set_process_debug_flag( process, 1 );
     reply->suspend = (current->suspend || process->suspend);
-
-    if (have_cpu_override)
-        process->cpu_override = *cpu_override;
 }
 
 /* open a handle to a process */
@@ -1726,7 +1713,7 @@ DECL_HANDLER(get_process_idle_event)
     reply->event = 0;
     if ((process = get_process_from_handle( req->handle, PROCESS_QUERY_INFORMATION )))
     {
-        if (process->idle_event && process != current->process)
+        if (process->idle_event)
             reply->event = alloc_handle( current->process, process->idle_event,
                                          EVENT_ALL_ACCESS, 0 );
         release_object( process );

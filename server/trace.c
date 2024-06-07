@@ -1372,24 +1372,6 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
     fputc( '}', stderr );
 }
 
-static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t size )
-{
-    const struct cpu_topology_override *cpu_topology = cur_data;
-    unsigned int i;
-
-    if (size < sizeof(*cpu_topology))
-        return;
-
-    fprintf( stderr,"%s{", prefix );
-    for (i = 0; i < cpu_topology->cpu_count; ++i)
-    {
-        if (i) fputc( ',', stderr );
-        fprintf( stderr, "%u", cpu_topology->host_cpu_id[i] );
-    }
-    fputc( '}', stderr );
-    remove_data( size );
-}
-
 typedef void (*dump_func)( const void *req );
 
 /* Everything below this line is generated automatically by tools/make_requests */
@@ -1461,8 +1443,7 @@ static void dump_get_startup_info_reply( const struct get_startup_info_reply *re
 
 static void dump_init_process_done_request( const struct init_process_done_request *req )
 {
-    dump_varargs_cpu_topology_override( " cpu_override=", cur_size );
-    dump_uint64( ", teb=", &req->teb );
+    dump_uint64( " teb=", &req->teb );
     dump_uint64( ", peb=", &req->peb );
     dump_uint64( ", ldt_copy=", &req->ldt_copy );
 }
@@ -2430,20 +2411,6 @@ static void dump_flush_key_request( const struct flush_key_request *req )
     fprintf( stderr, " hkey=%04x", req->hkey );
 }
 
-static void dump_flush_key_reply( const struct flush_key_reply *req )
-{
-    dump_abstime( " timestamp_counter=", &req->timestamp_counter );
-    fprintf( stderr, ", total=%u", req->total );
-    fprintf( stderr, ", branch_count=%d", req->branch_count );
-    dump_varargs_bytes( ", data=", cur_size );
-}
-
-static void dump_flush_key_done_request( const struct flush_key_done_request *req )
-{
-    dump_abstime( " timestamp_counter=", &req->timestamp_counter );
-    fprintf( stderr, ", branch=%d", req->branch );
-}
-
 static void dump_enum_key_request( const struct enum_key_request *req )
 {
     fprintf( stderr, " hkey=%04x", req->hkey );
@@ -2526,12 +2493,7 @@ static void dump_unload_registry_request( const struct unload_registry_request *
 static void dump_save_registry_request( const struct save_registry_request *req )
 {
     fprintf( stderr, " hkey=%04x", req->hkey );
-}
-
-static void dump_save_registry_reply( const struct save_registry_reply *req )
-{
-    fprintf( stderr, " total=%u", req->total );
-    dump_varargs_bytes( ", data=", cur_size );
+    fprintf( stderr, ", file=%04x", req->file );
 }
 
 static void dump_set_registry_notification_request( const struct set_registry_notification_request *req )
@@ -3227,26 +3189,16 @@ static void dump_get_visible_region_reply( const struct get_visible_region_reply
     dump_varargs_rectangles( ", region=", cur_size );
 }
 
-static void dump_get_surface_region_request( const struct get_surface_region_request *req )
-{
-    fprintf( stderr, " window=%08x", req->window );
-}
-
-static void dump_get_surface_region_reply( const struct get_surface_region_reply *req )
-{
-    dump_rectangle( " visible_rect=", &req->visible_rect );
-    fprintf( stderr, ", total_size=%u", req->total_size );
-    dump_varargs_rectangles( ", region=", cur_size );
-}
-
 static void dump_get_window_region_request( const struct get_window_region_request *req )
 {
     fprintf( stderr, " window=%08x", req->window );
+    fprintf( stderr, ", surface=%d", req->surface );
 }
 
 static void dump_get_window_region_reply( const struct get_window_region_reply *req )
 {
-    fprintf( stderr, " total_size=%u", req->total_size );
+    dump_rectangle( " visible_rect=", &req->visible_rect );
+    fprintf( stderr, ", total_size=%u", req->total_size );
     dump_varargs_rectangles( ", region=", cur_size );
 }
 
@@ -3254,12 +3206,6 @@ static void dump_set_window_region_request( const struct set_window_region_reque
 {
     fprintf( stderr, " window=%08x", req->window );
     fprintf( stderr, ", redraw=%d", req->redraw );
-    dump_varargs_rectangles( ", region=", cur_size );
-}
-
-static void dump_set_layer_region_request( const struct set_layer_region_request *req )
-{
-    fprintf( stderr, " window=%08x", req->window );
     dump_varargs_rectangles( ", region=", cur_size );
 }
 
@@ -4843,7 +4789,6 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_open_key_request,
     (dump_func)dump_delete_key_request,
     (dump_func)dump_flush_key_request,
-    (dump_func)dump_flush_key_done_request,
     (dump_func)dump_enum_key_request,
     (dump_func)dump_set_key_value_request,
     (dump_func)dump_get_key_value_request,
@@ -4911,10 +4856,8 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_set_window_text_request,
     (dump_func)dump_get_windows_offset_request,
     (dump_func)dump_get_visible_region_request,
-    (dump_func)dump_get_surface_region_request,
     (dump_func)dump_get_window_region_request,
     (dump_func)dump_set_window_region_request,
-    (dump_func)dump_set_layer_region_request,
     (dump_func)dump_get_update_region_request,
     (dump_func)dump_update_window_zorder_request,
     (dump_func)dump_redraw_window_request,
@@ -5142,7 +5085,6 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_create_key_reply,
     (dump_func)dump_open_key_reply,
     NULL,
-    (dump_func)dump_flush_key_reply,
     NULL,
     (dump_func)dump_enum_key_reply,
     NULL,
@@ -5151,7 +5093,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     NULL,
-    (dump_func)dump_save_registry_reply,
+    NULL,
     NULL,
     NULL,
     (dump_func)dump_create_timer_reply,
@@ -5211,9 +5153,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     (dump_func)dump_get_windows_offset_reply,
     (dump_func)dump_get_visible_region_reply,
-    (dump_func)dump_get_surface_region_reply,
     (dump_func)dump_get_window_region_reply,
-    NULL,
     NULL,
     (dump_func)dump_get_update_region_reply,
     NULL,
@@ -5443,7 +5383,6 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "open_key",
     "delete_key",
     "flush_key",
-    "flush_key_done",
     "enum_key",
     "set_key_value",
     "get_key_value",
@@ -5511,10 +5450,8 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "set_window_text",
     "get_windows_offset",
     "get_visible_region",
-    "get_surface_region",
     "get_window_region",
     "set_window_region",
-    "set_layer_region",
     "get_update_region",
     "update_window_zorder",
     "redraw_window",

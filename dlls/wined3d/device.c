@@ -1772,29 +1772,6 @@ UINT CDECL wined3d_device_get_available_texture_mem(const struct wined3d_device 
 
     driver_info = &device->adapter->driver_info;
 
-    /* We can not acquire the context unless there is a swapchain. */
-    /*
-    if (device->swapchains && gl_info->supported[NVX_GPU_MEMORY_INFO] &&
-            !wined3d_settings.emulated_textureram)
-    {
-        GLint vram_free_kb;
-        UINT64 vram_free;
-
-        struct wined3d_context *context = context_acquire(device, NULL, 0);
-        gl_info->gl_ops.gl.p_glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &vram_free_kb);
-        vram_free = (UINT64)vram_free_kb * 1024;
-        context_release(context);
-
-        TRACE("Total 0x%s bytes. emulation 0x%s left, driver 0x%s left.\n",
-                wine_dbgstr_longlong(device->adapter->vram_bytes),
-                wine_dbgstr_longlong(device->adapter->vram_bytes - device->adapter->vram_bytes_used),
-                wine_dbgstr_longlong(vram_free));
-
-        vram_free = min(vram_free, device->adapter->vram_bytes - device->adapter->vram_bytes_used);
-        return min(UINT_MAX, vram_free);
-    }
-    */
-
     TRACE("Emulating 0x%s bytes. 0x%s used, returning 0x%s left.\n",
             wine_dbgstr_longlong(driver_info->vram_bytes),
             wine_dbgstr_longlong(device->adapter->vram_bytes_used),
@@ -3406,7 +3383,7 @@ static HRESULT process_vertices_strided(const struct wined3d_device *device, DWO
     lighting = state->render_states[WINED3D_RS_LIGHTING]
             && (dst_fvf & (WINED3DFVF_DIFFUSE | WINED3DFVF_SPECULAR));
     wined3d_get_material_colour_source(&diffuse_source, &emissive_source,
-            &ambient_source, &specular_source, state, stream_info);
+            &ambient_source, &specular_source, state);
     output_colour_format = wined3d_get_format(device->adapter, WINED3DFMT_B8G8R8A8_UNORM, 0);
     material_specular_state_colour = state->render_states[WINED3D_RS_SPECULARENABLE]
             ? &state->material.specular : &black;

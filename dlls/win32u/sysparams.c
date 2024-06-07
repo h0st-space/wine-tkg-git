@@ -1218,6 +1218,8 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     HKEY hkey, subkey;
     DWORD len;
 
+    static const GUID empty_uuid;
+
     TRACE( "%s %04X %04X %08X %02X %s\n", debugstr_a( name ), pci_id->vendor, pci_id->device,
            pci_id->subsystem, pci_id->revision, debugstr_guid( vulkan_uuid ) );
 
@@ -1249,10 +1251,12 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
                debugstr_guid(&vulkan_gpu->uuid), debugstr_a(vulkan_gpu->name));
     }
 
-    if (vulkan_uuid) ctx->gpu.vulkan_uuid = *vulkan_uuid;
+    if (vulkan_uuid && !IsEqualGUID( vulkan_uuid, &empty_uuid )) ctx->gpu.vulkan_uuid = *vulkan_uuid;
     else if (vulkan_gpu) ctx->gpu.vulkan_uuid = vulkan_gpu->uuid;
 
-    if (!name && vulkan_gpu) name = vulkan_gpu->name;
+    if (!pci_id->vendor && !pci_id->device && vulkan_gpu) pci_id = &vulkan_gpu->pci_id;
+
+    if ((!name || !strcmp( name, "Wine GPU" )) && vulkan_gpu) name = vulkan_gpu->name;
     if (name) RtlUTF8ToUnicodeN( ctx->gpu.name, sizeof(ctx->gpu.name) - sizeof(WCHAR), &len, name, strlen( name ) );
 
     snprintf( ctx->gpu.path, sizeof(ctx->gpu.path), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X\\%08X",
@@ -1799,7 +1803,7 @@ static NTSTATUS default_update_display_devices( struct device_manager_ctx *ctx )
     struct gdi_monitor monitor = {0};
     DEVMODEW mode = {.dmSize = sizeof(mode)};
 
-    add_gpu( "Default GPU", &pci_id, NULL, ctx );
+    add_gpu( "Wine GPU", &pci_id, NULL, ctx );
     add_source( "Default", source_flags, ctx );
 
     if (!read_source_mode( ctx->source_key, ENUM_CURRENT_SETTINGS, &mode ))
@@ -2098,6 +2102,11 @@ UINT get_monitor_dpi( HMONITOR monitor )
     return system_dpi;
 }
 
+static RECT get_monitor_rect( struct monitor *monitor, UINT dpi )
+{
+    return map_dpi_rect( monitor->rc_monitor, get_monitor_dpi( monitor->handle ), dpi );
+}
+
 /**********************************************************************
  *              get_win_monitor_dpi
  */
@@ -2286,7 +2295,7 @@ RECT get_virtual_screen_rect( UINT dpi )
     return rect;
 }
 
-static BOOL is_window_rect_full_screen( const RECT *rect )
+static BOOL is_window_rect_full_screen( const RECT *rect, UINT dpi )
 {
     struct monitor *monitor;
     BOOL ret = FALSE;
@@ -2299,9 +2308,7 @@ static BOOL is_window_rect_full_screen( const RECT *rect )
 
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
 
-        monrect = map_dpi_rect( monitor->rc_monitor, get_monitor_dpi( monitor->handle ),
-                                get_thread_dpi() );
-
+        monrect = get_monitor_rect( monitor, dpi );
         if (rect->left <= monrect.left && rect->right >= monrect.right &&
             rect->top <= monrect.top && rect->bottom >= monrect.bottom)
         {
@@ -2725,6 +2732,34 @@ static void monitor_get_interface_name( struct monitor *monitor, WCHAR *interfac
 
     asciiz_to_unicode( interface_name, buffer );
 }
+
+/* see D3DKMTOpenAdapterFromGdiDisplayName */
+static NTSTATUS d3dkmt_open_adapter_from_gdi_display_name( D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *desc )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    D3DKMT_OPENADAPTERFROMLUID luid_desc;
+    struct source *source;
+    UNICODE_STRING name;
+
+    TRACE( "desc %p, name %s\n", desc, debugstr_w( desc->DeviceName ) );
+
+    RtlInitUnicodeString( &name, desc->DeviceName );
+    if (!name.Length) return STATUS_UNSUCCESSFUL;
+    if (!(source = find_source( &name ))) return STATUS_UNSUCCESSFUL;
+
+    luid_desc.AdapterLuid = source->gpu->luid;
+    if ((source->state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) &&
+        !(status = NtGdiDdDDIOpenAdapterFromLuid( &luid_desc )))
+    {
+        desc->hAdapter = luid_desc.hAdapter;
+        desc->AdapterLuid = luid_desc.AdapterLuid;
+        desc->VidPnSourceId = source->id + 1;
+    }
+
+    source_release( source );
+    return status;
+}
+
 
 /***********************************************************************
  *	     NtUserEnumDisplayDevices    (win32u.@)
@@ -3199,12 +3234,56 @@ static BOOL all_detached_settings( const DEVMODEW *displays )
     return TRUE;
 }
 
+static BOOL get_primary_source_mode( DEVMODEW *mode )
+{
+    struct source *primary;
+    BOOL ret;
+
+    if (!(primary = find_source( NULL ))) return FALSE;
+    ret = source_get_current_settings( primary, mode );
+    source_release( primary );
+
+    return ret;
+}
+
+static void display_mode_changed( BOOL broadcast )
+{
+    DEVMODEW current_mode = {.dmSize = sizeof(DEVMODEW)};
+
+    if (!update_display_cache( TRUE ))
+    {
+        ERR( "Failed to update display cache after mode change.\n" );
+        return;
+    }
+    if (!get_primary_source_mode( &current_mode ))
+    {
+        ERR( "Failed to get primary source current display settings.\n" );
+        return;
+    }
+
+    if (!broadcast)
+        send_message( get_desktop_window(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+                      MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ) );
+    else
+    {
+        /* broadcast to all the windows as well if an application changed the display settings */
+        NtUserClipCursor( NULL );
+        send_notify_message( get_desktop_window(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+                             MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ), FALSE );
+        send_message_timeout( HWND_BROADCAST, WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
+                              MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ),
+                              SMTO_ABORTIFHUNG, 2000, FALSE );
+        /* post clip_fullscreen_window request to the foreground window */
+        NtUserPostMessage( NtUserGetForegroundWindow(), WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0 );
+    }
+}
+
 static LONG apply_display_settings( struct source *target, const DEVMODEW *devmode,
                                     HWND hwnd, DWORD flags, void *lparam )
 {
     static const WCHAR restorerW[] = {'_','_','w','i','n','e','_','d','i','s','p','l','a','y','_',
                                       's','e','t','t','i','n','g','s','_','r','e','s','t','o','r','e','r',0};
-    UNICODE_STRING restoter_str = RTL_CONSTANT_STRING( restorerW );
+    UNICODE_STRING restorer_str = RTL_CONSTANT_STRING( restorerW );
     WCHAR primary_name[CCHDEVICENAME];
     struct source *primary, *source;
     DEVMODEW *mode, *displays;
@@ -3257,7 +3336,7 @@ static LONG apply_display_settings( struct source *target, const DEVMODEW *devmo
     free( displays );
     if (ret) return ret;
 
-    if ((restorer_window = NtUserFindWindowEx( NULL, NULL, &restoter_str, NULL, 0 )))
+    if ((restorer_window = NtUserFindWindowEx( NULL, NULL, &restorer_str, NULL, 0 )))
     {
         if (NtUserGetWindowThread( restorer_window, NULL ) != GetCurrentThreadId())
         {
@@ -3266,26 +3345,7 @@ static LONG apply_display_settings( struct source *target, const DEVMODEW *devmo
         }
     }
 
-    if (!update_display_cache( TRUE ))
-        WARN( "Failed to update display cache after mode change.\n" );
-
-    if ((source = find_source( NULL )))
-    {
-        DEVMODEW current_mode = {.dmSize = sizeof(DEVMODEW)};
-
-        if (!source_get_current_settings( source, &current_mode )) WARN( "Failed to get primary source current display settings.\n" );
-        source_release( source );
-
-        NtUserClipCursor( NULL );
-        send_notify_message( NtUserGetDesktopWindow(), WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
-                             MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ), FALSE );
-        send_message_timeout( HWND_BROADCAST, WM_DISPLAYCHANGE, current_mode.dmBitsPerPel,
-                              MAKELPARAM( current_mode.dmPelsWidth, current_mode.dmPelsHeight ),
-                              SMTO_ABORTIFHUNG, 2000, FALSE );
-        /* post clip_fullscreen_window request to the foreground window */
-        NtUserPostMessage( NtUserGetForegroundWindow(), WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0 );
-    }
-
+    display_mode_changed( TRUE );
     return ret;
 }
 
@@ -3445,8 +3505,7 @@ static BOOL should_enumerate_monitor( struct monitor *monitor, const POINT *orig
     if (!is_monitor_active( monitor )) return FALSE;
     if (monitor->is_clone) return FALSE;
 
-    *rect = map_dpi_rect( monitor->rc_monitor, get_monitor_dpi( monitor->handle ),
-                          get_thread_dpi() );
+    *rect = get_monitor_rect( monitor, get_thread_dpi() );
     OffsetRect( rect, -origin->x, -origin->y );
     return intersect_rect( rect, rect, limit );
 }
@@ -3599,7 +3658,7 @@ HMONITOR monitor_from_rect( const RECT *rect, UINT flags, UINT dpi )
 
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
 
-        monitor_rect = map_dpi_rect( monitor->rc_monitor, get_monitor_dpi( monitor->handle ), system_dpi );
+        monitor_rect = get_monitor_rect( monitor, system_dpi );
         if (intersect_rect( &intersect, &monitor_rect, &r ))
         {
             /* check for larger intersecting area */
@@ -6302,8 +6361,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
     case NtUserCallNoParam_ReleaseCapture:
         return release_capture();
 
-    case NtUserCallNoParam_UpdateDisplayCache:
-        return update_display_cache( TRUE );
+    case NtUserCallNoParam_DisplayModeChanged:
+        display_mode_changed( FALSE );
+        return TRUE;
 
     /* temporary exports */
     case NtUserExitingThread:
@@ -6361,9 +6421,6 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
     case NtUserCallOneParam_GetSysColor:
         return get_sys_color( arg );
 
-    case NtUserCallOneParam_IsWindowRectFullScreen:
-        return is_window_rect_full_screen( (const RECT *)arg );
-
     case NtUserCallOneParam_RealizePalette:
         return realize_palette( UlongToHandle(arg) );
 
@@ -6402,6 +6459,9 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
 
     case NtUserCallOneParam_SetThreadDpiAwarenessContext:
         return set_thread_dpi_awareness_context( arg );
+
+    case NtUserCallOneParam_D3DKMTOpenAdapterFromGdiDisplayName:
+        return d3dkmt_open_adapter_from_gdi_display_name( (void *)arg );
 
     /* temporary exports */
     case NtUserGetDeskPattern:
@@ -6443,6 +6503,15 @@ ULONG_PTR WINAPI NtUserCallTwoParam( ULONG_PTR arg1, ULONG_PTR arg2, ULONG code 
 
     case NtUserCallTwoParam_UnhookWindowsHook:
         return unhook_windows_hook( arg1, (HOOKPROC)arg2 );
+
+    case NtUserCallTwoParam_AdjustWindowRect:
+    {
+        struct adjust_window_rect_params *params = (void *)arg2;
+        return adjust_window_rect( (RECT *)arg1, params->style, params->menu, params->ex_style, params->dpi );
+    }
+
+    case NtUserCallTwoParam_IsWindowRectFullScreen:
+        return is_window_rect_full_screen( (const RECT *)arg1, arg2 );
 
     /* temporary exports */
     case NtUserAllocWinProc:

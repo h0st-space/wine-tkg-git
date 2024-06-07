@@ -77,14 +77,14 @@ void init_monitors( int width, int height )
     monitor_rc_work = virtual_screen_rect;
 
     if (!hwnd || !NtUserIsWindowVisible( hwnd )) return;
-    if (!NtUserGetWindowRect( hwnd, &rect )) return;
+    if (!NtUserGetWindowRect( hwnd, &rect, get_win_monitor_dpi( hwnd ) )) return;
     if (rect.top) monitor_rc_work.bottom = rect.top;
     else monitor_rc_work.top = rect.bottom;
     TRACE( "found tray %p %s work area %s\n", hwnd,
            wine_dbgstr_rect( &rect ), wine_dbgstr_rect( &monitor_rc_work ));
 
     /* if we're notified from Java thread, update registry */
-    if (*p_java_vm) NtUserCallNoParam( NtUserCallNoParam_UpdateDisplayCache );
+    if (*p_java_vm) NtUserCallNoParam( NtUserCallNoParam_DisplayModeChanged );
 }
 
 
@@ -281,7 +281,7 @@ UINT ANDROID_UpdateDisplayDevices( const struct gdi_device_manager *device_manag
     };
     DEVMODEW current = mode;
 
-    device_manager->add_gpu( "Android GPU", &pci_id, NULL, param );
+    device_manager->add_gpu( "Wine GPU", &pci_id, NULL, param );
     device_manager->add_source( "Default", source_flags, param );
     device_manager->add_monitor( &gdi_monitor, param );
 
@@ -346,10 +346,9 @@ static const struct user_driver_funcs android_drv_funcs =
     .pSetCapture = ANDROID_SetCapture,
     .pSetLayeredWindowAttributes = ANDROID_SetLayeredWindowAttributes,
     .pSetParent = ANDROID_SetParent,
-    .pSetWindowRgn = ANDROID_SetWindowRgn,
     .pSetWindowStyle = ANDROID_SetWindowStyle,
     .pShowWindow = ANDROID_ShowWindow,
-    .pUpdateLayeredWindow = ANDROID_UpdateLayeredWindow,
+    .pCreateLayeredWindow = ANDROID_CreateLayeredWindow,
     .pWindowMessage = ANDROID_WindowMessage,
     .pWindowPosChanging = ANDROID_WindowPosChanging,
     .pWindowPosChanged = ANDROID_WindowPosChanged,

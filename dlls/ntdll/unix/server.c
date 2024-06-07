@@ -49,10 +49,6 @@
 #ifdef HAVE_SYS_UN_H
 #include <sys/un.h>
 #endif
-#include <sys/ioctl.h>
-#ifdef HAVE_LINUX_IOCTL_H
-#include <linux/ioctl.h>
-#endif
 #ifdef HAVE_SYS_PRCTL_H
 # include <sys/prctl.h>
 #endif
@@ -88,22 +84,6 @@
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
-
-/* just in case... */
-#undef EXT2_IOC_GETFLAGS
-#undef EXT2_IOC_SETFLAGS
-#undef EXT4_CASEFOLD_FL
-
-#ifdef __linux__
-
-/* Define the ext2 ioctls for handling extra attributes */
-#define EXT2_IOC_GETFLAGS _IOR('f', 1, long)
-#define EXT2_IOC_SETFLAGS _IOW('f', 2, long)
-
-/* Case-insensitivity attribute */
-#define EXT4_CASEFOLD_FL 0x40000000
-
-#endif
 
 #ifndef MSG_CMSG_CLOEXEC
 #define MSG_CMSG_CLOEXEC 0
@@ -295,16 +275,8 @@ unsigned int server_call_unlocked( void *req_ptr )
  */
 unsigned int CDECL wine_server_call( void *req_ptr )
 {
-    struct __server_request_info * const req = req_ptr;
     sigset_t old_set;
     unsigned int ret;
-
-    /* trigger write watches, otherwise read() might return EFAULT */
-    if (req->u.req.request_header.reply_size &&
-        !virtual_check_buffer_for_write( req->reply_data, req->u.req.request_header.reply_size ))
-    {
-        return STATUS_ACCESS_VIOLATION;
-    }
 
     pthread_sigmask( SIG_BLOCK, &server_block_set, &old_set );
     ret = server_call_unlocked( req_ptr );
@@ -1277,28 +1249,6 @@ static const char *init_server_dir( dev_t dev, ino_t ino )
 
 
 /***********************************************************************
- *           set_case_insensitive
- *
- * Make the supplied directory case insensitive, if available.
- */
-static void set_case_insensitive(const char *dir)
-{
-#if defined(EXT2_IOC_GETFLAGS) && defined(EXT2_IOC_SETFLAGS) && defined(EXT4_CASEFOLD_FL)
-    int flags, fd;
-
-    if ((fd = open(dir, O_RDONLY | O_NONBLOCK | O_LARGEFILE)) == -1)
-        return;
-    if (ioctl(fd, EXT2_IOC_GETFLAGS, &flags) != -1 && !(flags & EXT4_CASEFOLD_FL))
-    {
-        flags |= EXT4_CASEFOLD_FL;
-        ioctl(fd, EXT2_IOC_SETFLAGS, &flags);
-    }
-    close(fd);
-#endif
-}
-
-
-/***********************************************************************
  *           setup_config_dir
  *
  * Setup the wine configuration dir.
@@ -1334,7 +1284,6 @@ static int setup_config_dir(void)
     if (!mkdir( "dosdevices", 0777 ))
     {
         mkdir( "drive_c", 0777 );
-        set_case_insensitive( "drive_c" );
         symlink( "../drive_c", "dosdevices/c:" );
         symlink( "/", "dosdevices/z:" );
     }
@@ -1707,7 +1656,6 @@ size_t server_init_process(void)
 void server_init_process_done(void)
 {
     void *teb;
-    struct cpu_topology_override *cpu_override = get_cpu_topology_override();
     unsigned int status;
     int suspend;
     FILE_FS_DEVICE_INFORMATION info;
@@ -1732,8 +1680,6 @@ void server_init_process_done(void)
     /* Signal the parent process to continue */
     SERVER_START_REQ( init_process_done )
     {
-        if (cpu_override)
-            wine_server_add_data( req, cpu_override, sizeof(*cpu_override) );
         req->teb      = wine_server_client_ptr( teb );
         req->peb      = NtCurrentTeb64() ? NtCurrentTeb64()->Peb : wine_server_client_ptr( peb );
 #ifdef __i386__

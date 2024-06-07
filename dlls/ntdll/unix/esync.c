@@ -29,14 +29,17 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifdef HAVE_POLL_H
+#include <poll.h>
+#endif
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <poll.h>
 #ifdef HAVE_SYS_STAT_H
 # include <sys/stat.h>
 #endif
-#include <poll.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -621,7 +624,7 @@ NTSTATUS esync_pulse_event( HANDLE handle )
 
     /* Try to give other threads a chance to wake up. Hopefully erring on this
      * side is the better thing to do... */
-    NtYieldExecution();
+    usleep(0);
 
     read( obj->fd, &value, sizeof(value) );
 

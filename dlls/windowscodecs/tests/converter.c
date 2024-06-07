@@ -602,6 +602,26 @@ static const BYTE bits_24bppBGR_gray[] = {
 static const struct bitmap_data testdata_24bppBGR_gray = {
     &GUID_WICPixelFormat24bppBGR, 24, bits_24bppBGR_gray, 32, 2, 96.0, 96.0};
 
+#define TO_16bppBGRA5551(b,g,r,a) ( \
+        ((a >> 7) << 15) | \
+        ((r >> 3) << 10) | \
+        ((g >> 3) << 5) | \
+        ((b >> 3)) \
+)
+
+static const WORD bits_16bppBGRA5551[] = {
+    TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255), TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255),
+    TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255), TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255),
+    TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255), TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255),
+    TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255), TO_16bppBGRA5551(255,0,0,255), TO_16bppBGRA5551(0,255,0,255), TO_16bppBGRA5551(0,0,255,255), TO_16bppBGRA5551(0,0,0,255),
+    TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255), TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255),
+    TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255), TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255),
+    TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255), TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255),
+    TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255), TO_16bppBGRA5551(0,255,255,255), TO_16bppBGRA5551(255,0,255,255), TO_16bppBGRA5551(255,255,0,255), TO_16bppBGRA5551(255,255,255,255)};
+
+static const struct bitmap_data testdata_16bppBGRA5551 = {
+    &GUID_WICPixelFormat16bppBGRA5551, 16, (BYTE*)bits_16bppBGRA5551, 32, 2, 96.0, 96.0};
+
 static void test_conversion(const struct bitmap_data *src, const struct bitmap_data *dst, const char *name, BOOL todo)
 {
     BitmapTestSrc *src_obj;
@@ -1418,8 +1438,6 @@ static void test_multi_encoder_impl(const struct bitmap_data **srcs, const CLSID
 
         if (hglobal && SUCCEEDED(hr))
         {
-            IWICBitmapEncoderInfo *info = NULL;
-
             if (palette)
             {
                 hr = IWICBitmapEncoder_SetPalette(encoder, palette);
@@ -1437,20 +1455,6 @@ static void test_multi_encoder_impl(const struct bitmap_data **srcs, const CLSID
                 else
                     ok(hr == WINCODEC_ERR_UNSUPPORTEDOPERATION, "wrong error %#lx\n", hr);
                 hr = S_OK;
-            }
-
-            hr = IWICBitmapEncoder_GetEncoderInfo(encoder, &info);
-            ok(hr == S_OK || hr == WINCODEC_ERR_COMPONENTNOTFOUND, "wrong error %#lx\n", hr);
-            if (SUCCEEDED(hr))
-            {
-                CLSID clsid;
-
-                hr = IWICBitmapEncoderInfo_GetCLSID(info, &clsid);
-                ok(hr == S_OK, "wrong error %#lx\n", hr);
-                ok(!IsEqualGUID(clsid_encoder, &clsid), "wrong CLSID %s (%s)\n",
-                       wine_dbgstr_guid(clsid_encoder), wine_dbgstr_guid(&clsid));
-
-                IWICBitmapEncoderInfo_Release(info);
             }
 
             i=0;
@@ -2070,6 +2074,7 @@ START_TEST(converter)
     test_conversion(&testdata_32bppBGR, &testdata_8bppGray, "32bppBGR -> 8bppGray", FALSE);
     test_conversion(&testdata_32bppGrayFloat, &testdata_24bppBGR_gray, "32bppGrayFloat -> 24bppBGR gray", FALSE);
     test_conversion(&testdata_32bppGrayFloat, &testdata_8bppGray, "32bppGrayFloat -> 8bppGray", FALSE);
+    test_conversion(&testdata_32bppBGRA, &testdata_16bppBGRA5551, "32bppBGRA -> 16bppBGRA5551", FALSE);
 
     test_invalid_conversion();
     test_default_converter();

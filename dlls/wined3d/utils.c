@@ -3059,7 +3059,7 @@ static void query_view_class(struct wined3d_format_gl *format)
 
 static void query_internal_format(struct wined3d_adapter *adapter,
         struct wined3d_format_gl *format, const struct wined3d_format_texture_info *texture_info,
-        struct wined3d_gl_info *gl_info, BOOL srgb_write_supported, BOOL srgb_format)
+        struct wined3d_gl_info *gl_info, BOOL srgb_format)
 {
     GLint count, multisample_types[8];
     unsigned int i, max_log2;
@@ -3078,12 +3078,8 @@ static void query_internal_format(struct wined3d_adapter *adapter,
         {
             query_format_cap(gl_info, format, format->srgb_internal, GL_SRGB_READ,
                     WINED3D_FORMAT_CAP_SRGB_READ, "sRGB read");
-
-            if (srgb_write_supported)
-                query_format_cap(gl_info, format, format->srgb_internal, GL_SRGB_WRITE,
-                        WINED3D_FORMAT_CAP_SRGB_WRITE, "sRGB write");
-            else
-                format_clear_caps(&format->f, WINED3D_FORMAT_CAP_SRGB_WRITE);
+            query_format_cap(gl_info, format, format->srgb_internal, GL_SRGB_WRITE,
+                    WINED3D_FORMAT_CAP_SRGB_WRITE, "sRGB write");
 
             if (!(format->f.caps[WINED3D_GL_RES_TYPE_TEX_2D]
                     & (WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE)))
@@ -3115,9 +3111,6 @@ static void query_internal_format(struct wined3d_adapter *adapter,
                 format->internal = format->srgb_internal;
             }
         }
-
-        if ((format->f.caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_SRGB_WRITE) && !srgb_write_supported)
-            format_clear_caps(&format->f, WINED3D_FORMAT_CAP_SRGB_WRITE);
     }
 
     if (!gl_info->supported[ARB_DEPTH_TEXTURE] && (format->f.depth_size || format->f.stencil_size))
@@ -3170,11 +3163,9 @@ static BOOL init_format_texture_info(struct wined3d_adapter *adapter, struct win
     struct fragment_caps fragment_caps;
     struct shader_caps shader_caps;
     unsigned int i, j;
-    BOOL srgb_write;
 
     adapter->fragment_pipe->get_caps(adapter, &fragment_caps);
     adapter->shader_backend->shader_get_caps(adapter, &shader_caps);
-    srgb_write = (!shader_caps.ps_version || (shader_caps.wined3d_caps & WINED3D_SHADER_CAP_SRGB_WRITE));
 
     for (i = 0; i < ARRAY_SIZE(format_texture_info); ++i)
     {
@@ -3229,7 +3220,7 @@ static BOOL init_format_texture_info(struct wined3d_adapter *adapter, struct win
         if (!gl_info->supported[ARB_SHADOW] && (format->f.caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_SHADOW))
             format_clear_caps(&format->f, WINED3D_FORMAT_CAP_TEXTURE);
 
-        query_internal_format(adapter, format, &format_texture_info[i], gl_info, srgb_write, FALSE);
+        query_internal_format(adapter, format, &format_texture_info[i], gl_info, FALSE);
 
         /* Texture conversion stuff */
         format->f.conv_byte_count = format_texture_info[i].conv_byte_count;
@@ -3257,7 +3248,7 @@ static BOOL init_format_texture_info(struct wined3d_adapter *adapter, struct win
             srgb_format->internal = format_texture_info[i].gl_srgb_internal;
             srgb_format->srgb_internal = format_texture_info[i].gl_srgb_internal;
             format_set_caps(&srgb_format->f, WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE);
-            query_internal_format(adapter, srgb_format, &format_texture_info[i], gl_info, srgb_write, TRUE);
+            query_internal_format(adapter, srgb_format, &format_texture_info[i], gl_info, TRUE);
         }
     }
 
@@ -6266,8 +6257,8 @@ void multiply_matrix(struct wined3d_matrix *dst, const struct wined3d_matrix *sr
     *dst = tmp;
 }
 
-void wined3d_ffp_get_fs_settings(const struct wined3d_context *context, const struct wined3d_state *state,
-        struct ffp_frag_settings *settings, BOOL ignore_textype)
+void wined3d_ffp_get_fs_settings(const struct wined3d_context *context,
+        const struct wined3d_state *state, struct ffp_frag_settings *settings)
 {
 #define ARG1 0x01
 #define ARG2 0x02
@@ -6333,10 +6324,7 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_context *context, const st
                 settings->op[i].color_fixup = COLOR_FIXUP_IDENTITY;
             else
                 settings->op[i].color_fixup = texture->resource.format->color_fixup;
-            if (ignore_textype)
-                settings->op[i].tex_type = WINED3D_GL_RES_TYPE_TEX_1D;
-            else
-                settings->op[i].tex_type = texture->resource.gl_type;
+            settings->op[i].tex_type = texture->resource.gl_type;
         } else {
             settings->op[i].color_fixup = COLOR_FIXUP_IDENTITY;
             settings->op[i].tex_type = WINED3D_GL_RES_TYPE_TEX_1D;
@@ -6491,17 +6479,6 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_context *context, const st
         }
     }
     settings->sRGB_write = !d3d_info->srgb_write_control && needs_srgb_write(d3d_info, state, &state->fb);
-    if (d3d_info->vs_clipping || !use_vs(state) || !state->render_states[WINED3D_RS_CLIPPING]
-            || !state->render_states[WINED3D_RS_CLIPPLANEENABLE])
-    {
-        /* No need to emulate clipplanes if GL supports native vertex shader clipping or if
-         * the fixed function vertex pipeline is used(which always supports clipplanes), or
-         * if no clipplane is enabled
-         */
-        settings->emul_clipplanes = 0;
-    } else {
-        settings->emul_clipplanes = 1;
-    }
 
     texture = wined3d_state_get_ffp_texture(state, 0);
     if (state->render_states[WINED3D_RS_COLORKEYENABLE]
@@ -6530,11 +6507,10 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_context *context, const st
             }
             else
             {
-                const struct wined3d_stream_info *si = &context->stream_info;
                 unsigned int coord_idx = state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX];
                 if ((state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX] >> WINED3D_FFP_TCI_SHIFT)
                         & WINED3D_FFP_TCI_MASK
-                        || (coord_idx < WINED3D_MAX_FFP_TEXTURES && (si->use_map & (1u << (WINED3D_FFP_TEXCOORD0 + coord_idx)))))
+                        || (coord_idx < WINED3D_MAX_FFP_TEXTURES && (state->vertex_declaration->texcoords & (1u << coord_idx))))
                     settings->texcoords_initialized |= 1u << i;
             }
         }
@@ -6589,6 +6565,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_context *context,
         const struct wined3d_state *state, struct wined3d_ffp_vs_settings *settings)
 {
     enum wined3d_material_color_source diffuse_source, emissive_source, ambient_source, specular_source;
+    const struct wined3d_vertex_declaration *vdecl = state->vertex_declaration;
     const struct wined3d_stream_info *si = &context->stream_info;
     const struct wined3d_d3d_info *d3d_info = context->d3d_info;
     unsigned int coord_idx, i;
@@ -6599,7 +6576,8 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_context *context,
     {
         settings->transformed = 1;
         settings->point_size = state->primitive_type == WINED3D_PT_POINTLIST;
-        settings->per_vertex_point_size = !!(si->use_map & 1u << WINED3D_FFP_PSIZE);
+        settings->per_vertex_point_size = vdecl->point_size;
+        settings->diffuse = vdecl->diffuse;
         if (!state->render_states[WINED3D_RS_FOGENABLE])
             settings->fog_mode = WINED3D_FFP_VS_FOG_OFF;
         else if (state->render_states[WINED3D_RS_FOGTABLEMODE] != WINED3D_FOG_NONE)
@@ -6610,7 +6588,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_context *context,
         for (i = 0; i < WINED3D_MAX_FFP_TEXTURES; ++i)
         {
             coord_idx = state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX];
-            if (coord_idx < WINED3D_MAX_FFP_TEXTURES && (si->use_map & (1u << (WINED3D_FFP_TEXCOORD0 + coord_idx))))
+            if (coord_idx < WINED3D_MAX_FFP_TEXTURES && (vdecl->texcoords & (1u << coord_idx)))
                 settings->texcoords |= 1u << i;
             settings->texgen[i] = state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX];
         }
@@ -6642,16 +6620,17 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_context *context,
 
     settings->clipping = state->render_states[WINED3D_RS_CLIPPING]
             && state->render_states[WINED3D_RS_CLIPPLANEENABLE];
-    settings->normal = !!(si->use_map & (1u << WINED3D_FFP_NORMAL));
+    settings->diffuse = vdecl->diffuse;
+    settings->normal = vdecl->normal;
     settings->normalize = settings->normal && state->render_states[WINED3D_RS_NORMALIZENORMALS];
     settings->lighting = !!state->render_states[WINED3D_RS_LIGHTING];
     settings->localviewer = !!state->render_states[WINED3D_RS_LOCALVIEWER];
     settings->specular_enable = !!state->render_states[WINED3D_RS_SPECULARENABLE];
     settings->point_size = state->primitive_type == WINED3D_PT_POINTLIST;
-    settings->per_vertex_point_size = !!(si->use_map & 1u << WINED3D_FFP_PSIZE);
+    settings->per_vertex_point_size = vdecl->point_size;
 
     wined3d_get_material_colour_source(&diffuse_source, &emissive_source,
-            &ambient_source, &specular_source, state, si);
+            &ambient_source, &specular_source, state);
     settings->diffuse_source = diffuse_source;
     settings->emissive_source = emissive_source;
     settings->ambient_source = ambient_source;
@@ -6660,7 +6639,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_context *context,
     for (i = 0; i < WINED3D_MAX_FFP_TEXTURES; ++i)
     {
         coord_idx = state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX];
-        if (coord_idx < WINED3D_MAX_FFP_TEXTURES && (si->use_map & (1u << (WINED3D_FFP_TEXCOORD0 + coord_idx))))
+        if (coord_idx < WINED3D_MAX_FFP_TEXTURES && (vdecl->texcoords & (1u << coord_idx)))
             settings->texcoords |= 1u << i;
         settings->texgen[i] = state->texture_states[i][WINED3D_TSS_TEXCOORD_INDEX];
     }

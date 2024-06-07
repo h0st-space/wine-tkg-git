@@ -148,7 +148,6 @@ struct msg_queue
     struct hook_table     *hooks;           /* hook table */
     timeout_t              last_get_msg;    /* time of last get message call */
     int                    keystate_lock;   /* owns an input keystate lock */
-    unsigned int           ignore_post_msg; /* ignore post messages newer than this unique id */
     int                    esync_fd;        /* esync file descriptor (signalled on message) */
     int                    esync_in_msgwait; /* our thread is currently waiting on us */
     unsigned int           fsync_idx;
@@ -327,7 +326,6 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         queue->hooks           = NULL;
         queue->last_get_msg    = current_time;
         queue->keystate_lock   = 0;
-        queue->ignore_post_msg = 0;
         queue->esync_fd        = -1;
         queue->esync_in_msgwait = 0;
         queue->fsync_idx       = 0;
@@ -337,7 +335,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         list_init( &queue->pending_timers );
         list_init( &queue->expired_timers );
         for (i = 0; i < NB_MSG_KINDS; i++) list_init( &queue->msg_list[i] );
-
+ 
         if (do_fsync())
             queue->fsync_idx = fsync_alloc_shm( 0, 0 );
  
@@ -687,18 +685,10 @@ static inline struct msg_queue *get_current_queue(void)
 }
 
 /* get a (pseudo-)unique id to tag hardware messages */
-static inline unsigned int get_unique_hw_id(void)
+static inline unsigned int get_unique_id(void)
 {
     static unsigned int id;
     if (!++id) id = 1;  /* avoid an id of 0 */
-    return id;
-}
-
-/* get unique increasing id to tag post messages */
-static inline unsigned int get_unique_post_id(void)
-{
-    static unsigned int id;
-    if (!++id) id = 1;
     return id;
 }
 
@@ -1012,7 +1002,7 @@ static int match_window( user_handle_t win, user_handle_t msg_win )
 }
 
 /* retrieve a posted message */
-static int get_posted_message( struct msg_queue *queue, unsigned int ignore_msg, user_handle_t win,
+static int get_posted_message( struct msg_queue *queue, user_handle_t win,
                                unsigned int first, unsigned int last, unsigned int flags,
                                struct get_message_reply *reply )
 {
@@ -1023,7 +1013,6 @@ static int get_posted_message( struct msg_queue *queue, unsigned int ignore_msg,
     {
         if (!match_window( win, msg->win )) continue;
         if (!check_msg_filter( msg->msg, first, last )) continue;
-        if (ignore_msg && (int)(msg->unique_id - ignore_msg) >= 0) continue;
         goto found; /* found one */
     }
     return 0;
@@ -1144,7 +1133,6 @@ static int is_queue_hung( struct msg_queue *queue )
 static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry )
 {
     struct msg_queue *queue = (struct msg_queue *)obj;
-    struct process *process = get_wait_queue_thread(entry)->process;
 
     /* a thread can only wait on its own queue */
     if (get_wait_queue_thread(entry)->queue != queue)
@@ -1152,7 +1140,6 @@ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *ent
         set_error( STATUS_ACCESS_DENIED );
         return 0;
     }
-    if (process->idle_event && !(queue->wake_mask & QS_SMRESULT)) set_event( process->idle_event );
 
     if (queue->fd && list_empty( &obj->wait_queue ))  /* first on the queue */
         set_fd_events( queue->fd, POLLIN );
@@ -1251,7 +1238,6 @@ static void msg_queue_destroy( struct object *obj )
     release_object( queue->input );
     if (queue->hooks) release_object( queue->hooks );
     if (queue->fd) release_object( queue->fd );
-    if (do_esync()) close( queue->esync_fd );
 }
 
 static void msg_queue_poll_event( struct fd *fd, int event )
@@ -1314,6 +1300,14 @@ static int check_queue_input_window( struct msg_queue *queue, user_handle_t wind
     else set_error( STATUS_INVALID_HANDLE );
 
     return ret;
+}
+
+/* check if the thread queue is idle and set the process idle event if so */
+void check_thread_queue_idle( struct thread *thread )
+{
+    struct msg_queue *queue = thread->queue;
+    if ((queue->wake_mask & QS_SMRESULT)) return;
+    if (thread->process->idle_event) set_event( thread->process->idle_event );
 }
 
 /* make sure the specified thread has a queue */
@@ -1660,7 +1654,6 @@ found:
     msg->msg       = WM_HOTKEY;
     msg->wparam    = hotkey->id;
     msg->lparam    = ((hotkey->vkey & 0xffff) << 16) | modifiers;
-    msg->unique_id = get_unique_post_id();
 
     free( msg->data );
     msg->data      = NULL;
@@ -1809,6 +1802,7 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
 
     if (!(hook_thread = get_first_global_hook( id ))) return 0;
     if (!(queue = hook_thread->queue)) return 0;
+    if (is_queue_hung( queue )) return 0;
 
     if (!(msg = mem_alloc( sizeof(*msg) ))) return 0;
 
@@ -1870,9 +1864,7 @@ static void rawmouse_init( struct rawinput *header, RAWMOUSE *rawmouse, int x, i
     header->wparam = 0;
     header->usage  = MAKELONG(HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC);
 
-    rawmouse->usFlags       = 0;
-    if (flags & MOUSEEVENTF_ABSOLUTE)    rawmouse->usFlags |= MOUSE_MOVE_ABSOLUTE;
-    if (flags & MOUSEEVENTF_VIRTUALDESK) rawmouse->usFlags |= MOUSE_VIRTUAL_DESKTOP;
+    rawmouse->usFlags       = MOUSE_MOVE_RELATIVE;
     rawmouse->usButtonFlags = 0;
     rawmouse->usButtonData  = 0;
     for (i = 1; i < ARRAY_SIZE(button_flags); ++i)
@@ -2042,7 +2034,7 @@ static void dispatch_rawinput_message( struct desktop *desktop, struct rawinput_
 
 /* queue a hardware message for a mouse event */
 static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const hw_input_t *input,
-                                unsigned int origin, struct msg_queue *sender, unsigned int send_flags )
+                                unsigned int origin, struct msg_queue *sender )
 {
     const struct rawinput_device *device;
     struct hardware_msg_data *msg_data;
@@ -2098,7 +2090,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         y = desktop->cursor.y;
     }
 
-    if (!(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
+    if ((foreground = get_foreground_thread( desktop, win )))
     {
         memset( &raw_msg, 0, sizeof(raw_msg) );
         raw_msg.foreground = foreground;
@@ -2106,7 +2098,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         raw_msg.time       = time;
         raw_msg.message    = WM_INPUT;
         raw_msg.flags      = flags;
-        rawmouse_init( &raw_msg.rawinput, &raw_msg.data.mouse, input->mouse.x, input->mouse.y,
+        rawmouse_init( &raw_msg.rawinput, &raw_msg.data.mouse, x - desktop->cursor.x, y - desktop->cursor.y,
                        raw_msg.flags, input->mouse.data, input->mouse.info );
 
         dispatch_rawinput_message( desktop, &raw_msg );
@@ -2119,8 +2111,6 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         update_desktop_mouse_state( desktop, flags, wparam );
         return 0;
     }
-
-    if (send_flags & SEND_HWMSG_NO_MSG) return 0;
 
     for (i = 0; i < ARRAY_SIZE( messages ); i++)
     {
@@ -2153,7 +2143,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
 
 /* queue a hardware message for a keyboard event */
 static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const hw_input_t *input,
-                                   unsigned int origin, struct msg_queue *sender, unsigned int send_flags )
+                                   unsigned int origin, struct msg_queue *sender )
 {
     struct hw_msg_source source = { IMDT_KEYBOARD, origin };
     const struct rawinput_device *device;
@@ -2164,30 +2154,34 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
     unsigned int message_code, time;
     lparam_t lparam = input->kbd.scan << 16;
     unsigned int flags = 0;
+    BOOL unicode = input->kbd.flags & KEYEVENTF_UNICODE;
     int wait;
 
     if (!(time = input->kbd.time)) time = get_tick_count();
 
-    if (!(input->kbd.flags & KEYEVENTF_UNICODE))
+    switch (vkey)
     {
-        switch (vkey)
-        {
-        case VK_MENU:
-        case VK_LMENU:
-        case VK_RMENU:
-            vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RMENU : VK_LMENU;
-            break;
-        case VK_CONTROL:
-        case VK_LCONTROL:
-        case VK_RCONTROL:
-            vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RCONTROL : VK_LCONTROL;
-            break;
-        case VK_SHIFT:
-        case VK_LSHIFT:
-        case VK_RSHIFT:
-            vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RSHIFT : VK_LSHIFT;
-            break;
-        }
+    case 0:
+        if (unicode) vkey = hook_vkey = VK_PACKET;
+        break;
+    case VK_MENU:
+    case VK_LMENU:
+    case VK_RMENU:
+        vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RMENU : VK_LMENU;
+        if ((input->kbd.vkey & 0xff) == VK_MENU) hook_vkey = vkey;
+        break;
+    case VK_CONTROL:
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+        vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RCONTROL : VK_LCONTROL;
+        if ((input->kbd.vkey & 0xff) == VK_CONTROL) hook_vkey = vkey;
+        break;
+    case VK_SHIFT:
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+        vkey = (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) ? VK_RSHIFT : VK_LSHIFT;
+        if ((input->kbd.vkey & 0xff) == VK_SHIFT) hook_vkey = vkey;
+        break;
     }
 
     message_code = (input->kbd.flags & KEYEVENTF_KEYUP) ? WM_KEYUP : WM_KEYDOWN;
@@ -2253,7 +2247,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
        }
     }
 
-    if (!(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
+    if (!unicode && (foreground = get_foreground_thread( desktop, win )))
     {
         struct rawinput_message raw_msg = {0};
         raw_msg.foreground = foreground;
@@ -2274,8 +2268,6 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
         return 0;
     }
 
-    if (send_flags & SEND_HWMSG_NO_MSG) return 0;
-
     if (!(msg = alloc_hardware_message( input->kbd.info, source, time, 0 ))) return 0;
     msg_data = msg->data;
 
@@ -2283,11 +2275,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
     msg->msg       = message_code;
     if (origin == IMO_INJECTED) msg_data->flags = LLKHF_INJECTED;
 
-    if (input->kbd.flags & KEYEVENTF_UNICODE && !vkey)
-    {
-        vkey = hook_vkey = VK_PACKET;
-    }
-    else
+    if (!unicode || input->kbd.vkey)
     {
         if (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) flags |= KF_EXTENDED;
         /* FIXME: set KF_DLGMODE and KF_MENUMODE when needed */
@@ -2587,7 +2575,7 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
         }
 
         /* now we can return it */
-        if (!msg->unique_id) msg->unique_id = get_unique_hw_id();
+        if (!msg->unique_id) msg->unique_id = get_unique_id();
         reply->type   = MSG_HARDWARE;
         reply->win    = win;
         reply->msg    = msg_code;
@@ -2694,7 +2682,6 @@ void post_message( user_handle_t win, unsigned int message, lparam_t wparam, lpa
         msg->result    = NULL;
         msg->data      = NULL;
         msg->data_size = 0;
-        msg->unique_id = get_unique_post_id();
 
         get_message_defaults( thread->queue, &msg->x, &msg->y, &msg->time );
 
@@ -2903,11 +2890,6 @@ DECL_HANDLER(set_queue_mask)
             if (req->skip_wait) queue->wake_mask = queue->changed_mask = 0;
             else wake_up( &queue->obj, 0 );
         }
-        if (do_fsync() && !is_signaled( queue ))
-            fsync_clear( &queue->obj );
-
-        if (do_esync() && !is_signaled( queue ))
-            esync_clear( queue->esync_fd );
     }
 }
 
@@ -2992,7 +2974,6 @@ DECL_HANDLER(send_message)
             set_queue_bits( recv_queue, QS_SENDMESSAGE );
             break;
         case MSG_POSTED:
-            msg->unique_id = get_unique_post_id();
             list_add_tail( &recv_queue->msg_list[POST_MESSAGE], &msg->entry );
             set_queue_bits( recv_queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
             if (msg->msg == WM_HOTKEY)
@@ -3036,10 +3017,10 @@ DECL_HANDLER(send_hardware_message)
     switch (req->input.type)
     {
     case INPUT_MOUSE:
-        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, req->flags );
+        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
         break;
     case INPUT_KEYBOARD:
-        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, req->flags );
+        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender );
         break;
     case INPUT_HARDWARE:
         queue_custom_hardware_message( desktop, req->win, origin, &req->input );
@@ -3119,12 +3100,12 @@ DECL_HANDLER(get_message)
 
     /* then check for posted messages */
     if ((filter & QS_POSTMESSAGE) &&
-        get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
+        get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
         return;
 
     if ((filter & QS_HOTKEY) && queue->hotkey_count &&
         req->get_first <= WM_HOTKEY && req->get_last >= WM_HOTKEY &&
-        get_posted_message( queue, queue->ignore_post_msg, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
+        get_posted_message( queue, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
         return;
 
     /* only check for quit messages if not posted messages pending */
@@ -3135,7 +3116,7 @@ DECL_HANDLER(get_message)
     if ((filter & QS_INPUT) &&
         filter_contains_hw_range( req->get_first, req->get_last ) &&
         get_hardware_message( current, req->hw_id, get_win, req->get_first, req->get_last, req->flags, reply ))
-        goto found_msg;
+        return;
 
     /* now check for WM_PAINT */
     if ((filter & QS_PAINT) &&
@@ -3148,7 +3129,7 @@ DECL_HANDLER(get_message)
         reply->wparam = 0;
         reply->lparam = 0;
         get_message_defaults( queue, &reply->x, &reply->y, &reply->time );
-        goto found_msg;
+        return;
     }
 
     /* now check for timer */
@@ -3164,37 +3145,13 @@ DECL_HANDLER(get_message)
         get_message_defaults( queue, &reply->x, &reply->y, &reply->time );
         if (!(req->flags & PM_NOYIELD) && current->process->idle_event)
             set_event( current->process->idle_event );
-        goto found_msg;
+        return;
     }
-
-    /* if we previously skipped posted messages then check again */
-    if (queue->ignore_post_msg && (filter & QS_POSTMESSAGE) &&
-        get_posted_message( queue, 0, get_win, req->get_first, req->get_last, req->flags, reply ))
-        return;
-
-    if (queue->ignore_post_msg && (filter & QS_HOTKEY) && queue->hotkey_count &&
-        req->get_first <= WM_HOTKEY && req->get_last >= WM_HOTKEY &&
-        get_posted_message( queue, 0, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
-        return;
 
     if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
     queue->wake_mask = req->wake_mask;
     queue->changed_mask = req->changed_mask;
     set_error( STATUS_PENDING );  /* FIXME */
-
-    if (do_fsync() && !is_signaled( queue ))
-        fsync_clear( &queue->obj );
-
-    if (do_esync() && !is_signaled( queue ))
-        esync_clear( queue->esync_fd );
-
-    return;
-
-found_msg:
-    if (req->flags & PM_REMOVE)
-        queue->ignore_post_msg = 0;
-    else if (!queue->ignore_post_msg)
-        queue->ignore_post_msg = get_unique_post_id();
 }
 
 
@@ -3212,10 +3169,7 @@ DECL_HANDLER(reply_message)
 DECL_HANDLER(accept_hardware_message)
 {
     if (current->queue)
-    {
         release_hardware_message( current->queue, req->hw_id );
-        current->queue->ignore_post_msg = 0;
-    }
     else
         set_error( STATUS_ACCESS_DENIED );
 }

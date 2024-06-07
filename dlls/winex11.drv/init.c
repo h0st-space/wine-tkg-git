@@ -407,7 +407,6 @@ static const struct user_driver_funcs x11drv_funcs =
     .pProcessEvents = X11DRV_ProcessEvents,
     .pReleaseDC = X11DRV_ReleaseDC,
     .pScrollDC = X11DRV_ScrollDC,
-    .pSetActiveWindow = X11DRV_SetActiveWindow,
     .pSetCapture = X11DRV_SetCapture,
     .pSetDesktopWindow = X11DRV_SetDesktopWindow,
     .pSetFocus = X11DRV_SetFocus,
@@ -421,14 +420,13 @@ static const struct user_driver_funcs x11drv_funcs =
     .pSysCommand = X11DRV_SysCommand,
     .pClipboardWindowProc = X11DRV_ClipboardWindowProc,
     .pUpdateClipboard = X11DRV_UpdateClipboard,
-    .pUpdateLayeredWindow = X11DRV_UpdateLayeredWindow,
+    .pCreateLayeredWindow = X11DRV_CreateLayeredWindow,
     .pWindowMessage = X11DRV_WindowMessage,
     .pWindowPosChanging = X11DRV_WindowPosChanging,
     .pWindowPosChanged = X11DRV_WindowPosChanged,
     .pSystemParametersInfo = X11DRV_SystemParametersInfo,
     .pVulkanInit = X11DRV_VulkanInit,
     .pwine_get_wgl_driver = X11DRV_wine_get_wgl_driver,
-    .pUpdateCandidatePos = X11DRV_UpdateCandidatePos,
     .pThreadDetach = X11DRV_ThreadDetach,
 };
 

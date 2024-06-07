@@ -36,6 +36,16 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
+
+/**********************************************************************
+ *       get_win_monitor_dpi
+ */
+static UINT get_win_monitor_dpi(HWND hwnd)
+{
+    return NtUserGetSystemDpiForProcess(NULL);  /* FIXME: get monitor dpi */
+}
+
+
 /* private window data */
 struct wayland_win_data
 {
@@ -171,7 +181,7 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
     TRACE("window=%s style=%#lx\n", wine_dbgstr_rect(&conf->rect), (long)style);
 
     /* The fullscreen state is implied by the window position and style. */
-    if (NtUserIsWindowRectFullScreen(&conf->rect))
+    if (NtUserIsWindowRectFullScreen(&conf->rect, get_win_monitor_dpi(data->hwnd)))
     {
         if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION)
             window_state |= WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED;
@@ -502,16 +512,6 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, UINT swp_flags,
     wayland_win_data_release(data);
 }
 
-static void wayland_resize_desktop(void)
-{
-    RECT virtual_rect = NtUserGetVirtualScreenRect();
-    NtUserSetWindowPos(NtUserGetDesktopWindow(), 0,
-                       virtual_rect.left, virtual_rect.top,
-                       virtual_rect.right - virtual_rect.left,
-                       virtual_rect.bottom - virtual_rect.top,
-                       SWP_NOZORDER | SWP_NOACTIVATE | SWP_DEFERERASE);
-}
-
 static void wayland_configure_window(HWND hwnd)
 {
     struct wayland_surface *surface;
@@ -633,8 +633,7 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg)
     {
     case WM_WAYLAND_INIT_DISPLAY_DEVICES:
-        NtUserCallNoParam(NtUserCallNoParam_UpdateDisplayCache);
-        wayland_resize_desktop();
+        NtUserCallNoParam(NtUserCallNoParam_DisplayModeChanged);
         return 0;
     case WM_WAYLAND_CONFIGURE:
         wayland_configure_window(hwnd);
@@ -653,13 +652,6 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
  */
 LRESULT WAYLAND_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    switch (msg)
-    {
-    case WM_DISPLAYCHANGE:
-        wayland_resize_desktop();
-        break;
-    }
-
     return NtUserMessageCall(hwnd, msg, wp, lp, 0, NtUserDefWindowProc, FALSE);
 }
 
@@ -756,7 +748,7 @@ void wayland_window_flush(HWND hwnd)
     if (!data) return;
 
     if (data->window_surface)
-        data->window_surface->funcs->flush(data->window_surface);
+        window_surface_flush(data->window_surface);
 
     wayland_win_data_release(data);
 }

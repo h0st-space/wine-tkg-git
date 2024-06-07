@@ -1,41 +1,30 @@
-# Last wine-tkg-staging-fsync-git configuration - Wed May 29 12:52:34 PM CEST 2024 :
+# Last wine-tkg-fsync-git configuration - Fri Jun  7 10:39:29 AM CEST 2024 :
 
 Local cfg files used
 
-Wine (plain) version: 9.9.r137.g5f7b9a5b837
-Using wine-staging patchset (version 9.9.r7.g123aed11)
+Wine (plain) version: 9.10.r126.g9f6e44fd9ca
 
-Disabled the local Esync patchset to use Staging impl instead.
+Using esync patchset (version ce79346)
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
 
 Done applying backports hotfixes (if any) - list available in prepare.log
 Done applying reverting hotfixes (if any) - list available in prepare.log
 
-240556e2b8cb94fc9cc85949b7e043f392b1802a reverted 
-bd89ab3040e30c11b34a95072d88f635ade03bdc reverted 
-CSMT-toggle.patch -- ( Applied CSMT toggle logic patch )
-
-Staging overrides, if any: 
-
-fsync-unix-staging.patch -- ( Applied fsync patches (unix, staging) )
-server_Abort_waiting_on_a_completion_port_when_closing_it.patch -- ( Added Abort waiting on a completion port when closing it Proton patch )
+esync-unix-mainline.patch -- ( Using Esync (unix, mainline) patchset )
+fsync-unix-mainline.patch -- ( Applied fsync patches (unix, mainline) )
 fsync_futex_waitv.patch -- ( Applied patches for fsync to support futex_waitv )
 
-childwindow-proton.patch -- ( Applied child window for vk patch )
-LAA-unix-staging.patch -- ( Applied large address aware override support (legacy) )
+LAA-unix.patch -- ( Applied large address aware override support (legacy) )
 
-proton-tkg-staging.patch -- ( Using Steam-specific Proton-tkg patches (staging) 2/3 )
-proton-cpu-topology-overrides.patch -- ( Enable Proton's CPU topology override support )
 msvcrt_nativebuiltin_mainline.patch -- ( Enforce msvcrt Dlls to native then builtin (from Proton) )
 josh-flat-theme.patch -- ( Add Josh's better-theme )
 proton-win10-default.patch -- ( Enforce win10 as default wine version )
 proton_battleye.patch -- ( Add support for Proton's Battleye runtime )
 proton-eac_bridge.patch -- ( Add support for Proton's EAC bridge )
 
-Applied hotfix remove_hooks_that_time_out2.mypatch
 Applied hotfix Return_nt_filename_and_resolve_DOS_drive_path.mypatch
 Applied hotfix a608ef1.mypatch
 Applied hotfix opencl-fixup.mypatch
 Applied hotfix nostale_mouse_fix.mypatch
 
-wine-tkg-staging.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )
+wine-tkg.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )

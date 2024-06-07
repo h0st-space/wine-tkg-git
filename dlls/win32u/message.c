@@ -2160,10 +2160,7 @@ BOOL WINAPI NtUserGetGUIThreadInfo( DWORD id, GUITHREADINFO *info )
             info->hwndMenuOwner  = wine_server_ptr_handle( reply->menu_owner );
             info->hwndMoveSize   = wine_server_ptr_handle( reply->move_size );
             info->hwndCaret      = wine_server_ptr_handle( reply->caret );
-            info->rcCaret.left   = reply->rect.left;
-            info->rcCaret.top    = reply->rect.top;
-            info->rcCaret.right  = reply->rect.right;
-            info->rcCaret.bottom = reply->rect.bottom;
+            info->rcCaret        = wine_server_get_rect( reply->rect );
             if (reply->menu_owner) info->flags |= GUI_INMENUMODE;
             if (reply->move_size) info->flags |= GUI_INMOVESIZE;
             if (reply->caret) info->flags |= GUI_CARETBLINKING;
@@ -2482,7 +2479,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
     {
         HWND orig = msg->hwnd;
 
-        msg->hwnd = window_from_point( 0, msg->pt, &hittest );
+        msg->hwnd = window_from_point( msg->hwnd, msg->pt, &hittest );
         if (!msg->hwnd) /* As a heuristic, try the next window if it's the owner of orig */
         {
             HWND next = get_window_relative( orig, GW_HWNDNEXT );

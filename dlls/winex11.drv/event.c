@@ -315,10 +315,6 @@ static enum event_merge_action merge_raw_motion_events( XIRawEvent *prev, XIRawE
  */
 static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
 {
-#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
-    struct x11drv_thread_data *thread_data = x11drv_thread_data();
-#endif
-
     switch (prev->type)
     {
     case ConfigureNotify:
@@ -350,21 +346,19 @@ static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
         case GenericEvent:
             if (next->xcookie.extension != xinput2_opcode) break;
             if (next->xcookie.evtype != XI_RawMotion) break;
-            if (thread_data->xinput2_rawinput) break;
-            if (thread_data->warp_serial) break;
+            if (x11drv_thread_data()->warp_serial) break;
             return MERGE_KEEP;
         }
         break;
     case GenericEvent:
         if (prev->xcookie.extension != xinput2_opcode) break;
         if (prev->xcookie.evtype != XI_RawMotion) break;
-        if (thread_data->xinput2_rawinput) break;
         switch (next->type)
         {
         case GenericEvent:
             if (next->xcookie.extension != xinput2_opcode) break;
             if (next->xcookie.evtype != XI_RawMotion) break;
-            if (thread_data->warp_serial) break;
+            if (x11drv_thread_data()->warp_serial) break;
             return merge_raw_motion_events( prev->xcookie.data, next->xcookie.data );
 #endif
         }
@@ -542,7 +536,7 @@ static inline BOOL can_activate_window( HWND hwnd )
     if (style & WS_MINIMIZE) return FALSE;
     if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_NOACTIVATE) return FALSE;
     if (hwnd == NtUserGetDesktopWindow()) return FALSE;
-    if (NtUserGetWindowRect( hwnd, &rect ) && IsRectEmpty( &rect )) return FALSE;
+    if (NtUserGetWindowRect( hwnd, &rect, get_win_monitor_dpi( hwnd ) ) && IsRectEmpty( &rect )) return FALSE;
     return !(style & WS_DISABLED);
 }
 
@@ -582,26 +576,12 @@ static void set_input_focus( struct x11drv_win_data *data )
  */
 static void set_focus( Display *display, HWND hwnd, Time time )
 {
-    HWND focus, old_active;
+    HWND focus;
     Window win;
     GUITHREADINFO threadinfo;
 
-    old_active = NtUserGetForegroundWindow();
-
-    /* prevent recursion */
-    x11drv_thread_data()->active_window = hwnd;
-
     TRACE( "setting foreground window to %p\n", hwnd );
     NtUserSetForegroundWindow( hwnd );
-
-    /* Some applications expect that a being deactivated topmost window
-     * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
-     * and perform some specific actions. Chessmaster is one of such apps.
-     * Window Manager keeps a topmost window on top in z-oder, so there is
-     * no need to actually do anything, just send the messages.
-     */
-    if (old_active && (NtUserGetWindowLongW( old_active, GWL_EXSTYLE ) & WS_EX_TOPMOST))
-        NtUserSetWindowPos( old_active, hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER );
 
     threadinfo.cbSize = sizeof(threadinfo);
     NtUserGetGUIThreadInfo( 0, &threadinfo );
@@ -840,8 +820,6 @@ static void focus_out( Display *display , HWND hwnd )
 
     if (!is_current_process_focused())
     {
-        x11drv_thread_data()->active_window = 0;
-
         /* Abey : 6-Oct-99. Check again if the focus out window is the
            Foreground window, because in most cases the messages sent
            above must have already changed the foreground window, in which
@@ -928,7 +906,7 @@ static BOOL X11DRV_Expose( HWND hwnd, XEvent *xev )
                                  data->whole_rect.top - data->client_rect.top );
 
             if (data->vis.visualid != default_visual.visualid)
-                data->surface->funcs->flush( data->surface );
+                window_surface_flush( data->surface );
         }
         OffsetRect( &rect, data->whole_rect.left - data->client_rect.left,
                     data->whole_rect.top - data->client_rect.top );
@@ -944,10 +922,7 @@ static BOOL X11DRV_Expose( HWND hwnd, XEvent *xev )
         SERVER_START_REQ( update_window_zorder )
         {
             req->window      = wine_server_user_handle( hwnd );
-            req->rect.left   = abs_rect.left;
-            req->rect.top    = abs_rect.top;
-            req->rect.right  = abs_rect.right;
-            req->rect.bottom = abs_rect.bottom;
+            req->rect        = wine_server_rectangle( abs_rect );
             wine_server_call( req );
         }
         SERVER_END_REQ;
@@ -1071,7 +1046,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     struct x11drv_win_data *data;
     RECT rect;
     POINT pos;
-    UINT flags;
+    UINT flags, dpi;
     HWND parent;
     BOOL root_coords;
     int cx, cy, x = event->x, y = event->y;
@@ -1093,6 +1068,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
 
     /* Get geometry */
 
+    dpi = get_win_monitor_dpi( data->hwnd );
     parent = NtUserGetAncestor( hwnd, GA_PARENT );
     root_coords = event->send_event;  /* synthetic events are always in root coords */
 
@@ -1144,7 +1120,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
                (int)(data->window_rect.bottom - data->window_rect.top), cx, cy );
 
     style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
-    if ((style & WS_CAPTION) == WS_CAPTION || !NtUserIsWindowRectFullScreen( &data->whole_rect ))
+    if ((style & WS_CAPTION) == WS_CAPTION || !NtUserIsWindowRectFullScreen( &data->whole_rect, dpi ))
     {
         read_net_wm_states( event->display, data );
         if ((data->net_wm_state & (1 << NET_WM_STATE_MAXIMIZED)))
@@ -1430,11 +1406,12 @@ void X11DRV_SetFocus( HWND hwnd )
 
 static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
 {
+    UINT dpi = get_win_monitor_dpi( hQueryWnd );
     RECT tempRect;
 
     if (!NtUserIsWindowEnabled(hQueryWnd)) return 0;
     
-    NtUserGetWindowRect(hQueryWnd, &tempRect);
+    NtUserGetWindowRect( hQueryWnd, &tempRect, dpi );
 
     if(!PtInRect(&tempRect, *lpPt)) return 0;
 
@@ -1442,7 +1419,7 @@ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
     {
         POINT pt = *lpPt;
         NtUserScreenToClient( hQueryWnd, &pt );
-        NtUserGetClientRect( hQueryWnd, &tempRect );
+        NtUserGetClientRect( hQueryWnd, &tempRect, dpi );
 
         if (PtInRect( &tempRect, pt))
         {

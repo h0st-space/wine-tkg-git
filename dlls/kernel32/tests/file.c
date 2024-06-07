@@ -1211,17 +1211,23 @@ static void test_CopyFileEx(void)
     ok(hfile != INVALID_HANDLE_VALUE, "failed to open destination file, error %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     retok = CopyFileExA(source, dest, copy_progress_cb, hfile, NULL, 0);
+    todo_wine
     ok(!retok, "CopyFileExA unexpectedly succeeded\n");
+    todo_wine
     ok(GetLastError() == ERROR_REQUEST_ABORTED, "expected ERROR_REQUEST_ABORTED, got %ld\n", GetLastError());
     ok(GetFileAttributesA(dest) != INVALID_FILE_ATTRIBUTES, "file was deleted\n");
 
     hfile = CreateFileA(dest, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                         NULL, OPEN_EXISTING, 0, 0);
+    todo_wine
     ok(hfile != INVALID_HANDLE_VALUE, "failed to open destination file, error %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     retok = CopyFileExA(source, dest, copy_progress_cb, hfile, NULL, 0);
+    todo_wine
     ok(!retok, "CopyFileExA unexpectedly succeeded\n");
+    todo_wine
     ok(GetLastError() == ERROR_REQUEST_ABORTED, "expected ERROR_REQUEST_ABORTED, got %ld\n", GetLastError());
+    todo_wine
     ok(GetFileAttributesA(dest) == INVALID_FILE_ATTRIBUTES, "file was not deleted\n");
 
     retok = CopyFileExA(source, NULL, copy_progress_cb, hfile, NULL, 0);
@@ -2709,6 +2715,7 @@ static void test_FindFirstFileA(void)
     char buffer[5] = "C:\\";
     char buffer2[100];
     char nonexistent[MAX_PATH];
+    BOOL found = FALSE;
 
     /* try FindFirstFileA on "C:\" */
     buffer[0] = get_windows_drive();
@@ -2740,9 +2747,30 @@ static void test_FindFirstFileA(void)
     ok( FindNextFileA( handle, &data ), "FindNextFile failed\n" );
     ok( !strcmp( data.cFileName, ".." ), "FindNextFile should return '..' as second entry\n" );
     while (FindNextFileA( handle, &data ))
+    {
         ok ( strcmp( data.cFileName, "." ) && strcmp( data.cFileName, ".." ),
              "FindNextFile shouldn't return '%s'\n", data.cFileName );
+        if (!found && (data.dwFileAttributes == FILE_ATTRIBUTE_NORMAL ||
+                        data.dwFileAttributes == FILE_ATTRIBUTE_ARCHIVE))
+        {
+            GetWindowsDirectoryA( buffer2, sizeof(buffer2) );
+            strcat(buffer2, "\\");
+            strcat(buffer2, data.cFileName);
+            strcat(buffer2, "\\*");
+            found = TRUE;
+        }
+    }
     ok ( FindClose(handle) == TRUE, "Failed to close handle %s\n", buffer2 );
+
+    ok ( found, "Windows dir should not be empty\n" );
+    if (found)
+    {
+        SetLastError( 0xdeadbeef );
+        handle = FindFirstFileA(buffer2, &data);
+        err = GetLastError();
+        ok ( handle == INVALID_HANDLE_VALUE, "FindFirstFile on %s should fail\n", buffer2 );
+        ok ( err == ERROR_DIRECTORY, "Bad Error number %x\n", err );
+    }
 
     /* try FindFirstFileA on "C:\foo\" */
     SetLastError( 0xdeadbeaf );

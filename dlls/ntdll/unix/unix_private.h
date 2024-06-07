@@ -119,7 +119,6 @@ struct async_fileio
 {
     async_callback_t    *callback;
     struct async_fileio *next;
-    DWORD                size;
     HANDLE               handle;
 };
 
@@ -181,7 +180,6 @@ extern struct ldt_copy __wine_ldt_copy;
 
 extern BOOL ac_odyssey;
 extern BOOL fsync_simulate_sched_quantum;
-extern BOOL simulate_writecopy;
 
 extern void init_environment(void);
 extern void init_startup_info(void);
@@ -307,7 +305,6 @@ extern void signal_init_threading(void);
 extern NTSTATUS signal_alloc_thread( TEB *teb );
 extern void signal_free_thread( TEB *teb );
 extern void signal_init_process(void);
-extern void signal_init_early(void);
 extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg,
                                                    BOOL suspend, TEB *teb );
 extern SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4];
@@ -350,7 +347,6 @@ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MA
 extern NTSTATUS get_device_info( int fd, struct _FILE_FS_DEVICE_INFORMATION *info );
 extern void init_files(void);
 extern void init_cpu_info(void);
-extern struct cpu_topology_override *get_cpu_topology_override(void);
 extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULONG info, BOOL async );
 extern void set_async_direct_result( HANDLE *async_handle, NTSTATUS status, ULONG_PTR information, BOOL mark_pending );
 

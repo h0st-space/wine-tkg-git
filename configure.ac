@@ -385,7 +385,6 @@ AC_CHECK_HEADERS(\
 	linux/ioctl.h \
 	linux/major.h \
 	linux/param.h \
-	linux/seccomp.h \
 	linux/serial.h \
 	linux/types.h \
 	linux/ucdrom.h \
@@ -1200,7 +1199,6 @@ then
 
     dnl *** All of the following tests require X11/Xlib.h
     AC_CHECK_HEADERS([X11/extensions/shape.h \
-                      X11/extensions/XInput.h \
                       X11/extensions/XInput2.h \
                       X11/extensions/XShm.h \
                       X11/extensions/Xfixes.h \
@@ -1430,6 +1428,16 @@ fi
 WINE_NOTICE_WITH(pcsclite,[test "x$PCSCLITE_LIBS" = x],
                  [libpcsclite not found, smart cards won't be supported.],
                  [enable_winscard])
+
+dnl **** Check for libodbc ****
+if test "x$with_odbc" != "xno"
+then
+    WINE_PACKAGE_FLAGS(ODBC,[odbc],[-lodbc],,,
+        [AC_CHECK_LIB(odbc,SQLConnect,[:],[ODBC_LIBS=""],[$ODBC_LIBS])])
+fi
+WINE_NOTICE_WITH(odbc,[test "x$ODBC_LIBS" = x],
+                 [libodbc not found, ODBC won't be supported.],
+                 [enable_odbc32])
 
 dnl **** Check for inotify ****
 if test "x$with_inotify" != "xno"
@@ -2082,8 +2090,6 @@ AC_CHECK_FUNCS(\
 	prctl \
 	proc_pidinfo \
 	sched_yield \
-	renameat \
-	renameat2 \
 	setproctitle \
 	setprogname \
 	sigprocmask \
@@ -2457,7 +2463,6 @@ WINE_CONFIG_MAKEFILE(dlls/atl90)
 WINE_CONFIG_MAKEFILE(dlls/atlthunk)
 WINE_CONFIG_MAKEFILE(dlls/atlthunk/tests)
 WINE_CONFIG_MAKEFILE(dlls/atmlib)
-WINE_CONFIG_MAKEFILE(dlls/audioses)
 WINE_CONFIG_MAKEFILE(dlls/authz)
 WINE_CONFIG_MAKEFILE(dlls/avicap32)
 WINE_CONFIG_MAKEFILE(dlls/avifil32)
@@ -2499,6 +2504,7 @@ WINE_CONFIG_MAKEFILE(dlls/comsvcs/tests)
 WINE_CONFIG_MAKEFILE(dlls/concrt140)
 WINE_CONFIG_MAKEFILE(dlls/concrt140/tests)
 WINE_CONFIG_MAKEFILE(dlls/connect)
+WINE_CONFIG_MAKEFILE(dlls/coremessaging)
 WINE_CONFIG_MAKEFILE(dlls/credui)
 WINE_CONFIG_MAKEFILE(dlls/credui/tests)
 WINE_CONFIG_MAKEFILE(dlls/crtdll)
@@ -2507,7 +2513,6 @@ WINE_CONFIG_MAKEFILE(dlls/crypt32/tests)
 WINE_CONFIG_MAKEFILE(dlls/cryptdlg)
 WINE_CONFIG_MAKEFILE(dlls/cryptdll)
 WINE_CONFIG_MAKEFILE(dlls/cryptext)
-WINE_CONFIG_MAKEFILE(dlls/cryptext/tests)
 WINE_CONFIG_MAKEFILE(dlls/cryptnet)
 WINE_CONFIG_MAKEFILE(dlls/cryptnet/tests)
 WINE_CONFIG_MAKEFILE(dlls/cryptowinrt)
@@ -2686,8 +2691,6 @@ WINE_CONFIG_MAKEFILE(dlls/dxdiagn)
 WINE_CONFIG_MAKEFILE(dlls/dxdiagn/tests)
 WINE_CONFIG_MAKEFILE(dlls/dxgi)
 WINE_CONFIG_MAKEFILE(dlls/dxgi/tests)
-WINE_CONFIG_MAKEFILE(dlls/dxgkrnl.sys)
-WINE_CONFIG_MAKEFILE(dlls/dxgmms1.sys)
 WINE_CONFIG_MAKEFILE(dlls/dxtrans)
 WINE_CONFIG_MAKEFILE(dlls/dxva2)
 WINE_CONFIG_MAKEFILE(dlls/dxva2/tests)
@@ -3228,7 +3231,6 @@ WINE_CONFIG_MAKEFILE(dlls/wevtsvc)
 WINE_CONFIG_MAKEFILE(dlls/wiaservc)
 WINE_CONFIG_MAKEFILE(dlls/wiaservc/tests)
 WINE_CONFIG_MAKEFILE(dlls/wimgapi)
-WINE_CONFIG_MAKEFILE(dlls/win32k.sys)
 WINE_CONFIG_MAKEFILE(dlls/win32s16.dll16,enable_win16)
 WINE_CONFIG_MAKEFILE(dlls/win32u)
 WINE_CONFIG_MAKEFILE(dlls/win32u/tests)
@@ -3257,7 +3259,6 @@ WINE_CONFIG_MAKEFILE(dlls/windows.media.speech)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.speech/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.media)
 WINE_CONFIG_MAKEFILE(dlls/windows.media/tests)
-WINE_CONFIG_MAKEFILE(dlls/windows.networking.connectivity)
 WINE_CONFIG_MAKEFILE(dlls/windows.networking.hostname)
 WINE_CONFIG_MAKEFILE(dlls/windows.networking.hostname/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.networking)
@@ -3460,7 +3461,6 @@ WINE_CONFIG_MAKEFILE(programs/control)
 WINE_CONFIG_MAKEFILE(programs/cscript)
 WINE_CONFIG_MAKEFILE(programs/dism)
 WINE_CONFIG_MAKEFILE(programs/dllhost)
-WINE_CONFIG_MAKEFILE(programs/dotnetfx35)
 WINE_CONFIG_MAKEFILE(programs/dplaysvr)
 WINE_CONFIG_MAKEFILE(programs/dpnsvr)
 WINE_CONFIG_MAKEFILE(programs/dpvsetup)
@@ -3733,7 +3733,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-9.9.r7.g123aed11\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging Esync Fsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-9.10.r126.g9f6e44fd9ca\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Plain Esync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.nfo:

@@ -45,20 +45,19 @@ extern ULONG_PTR set_icon_param( HICON handle, ULONG_PTR param );
 
 /* dce.c */
 extern struct window_surface dummy_surface;
-extern void create_offscreen_window_surface( const RECT *visible_rect,
+extern void create_offscreen_window_surface( HWND hwnd, const RECT *visible_rect,
                                              struct window_surface **surface );
 extern void erase_now( HWND hwnd, UINT rdw_flags );
 extern void flush_window_surfaces( BOOL idle );
-extern void move_window_bits( HWND hwnd, struct window_surface *old_surface,
-                              struct window_surface *new_surface,
-                              const RECT *visible_rect, const RECT *old_visible_rect,
+extern void move_window_bits( HWND hwnd, const RECT *visible_rect, const RECT *old_visible_rect,
                               const RECT *window_rect, const RECT *valid_rects );
-extern void move_window_bits_parent( HWND hwnd, HWND parent, const RECT *window_rect,
-                                     const RECT *valid_rects );
+extern void move_window_bits_surface( HWND hwnd, const RECT *window_rect, struct window_surface *old_surface,
+                                      const RECT *old_visible_rect, const RECT *valid_rects );
 extern void register_window_surface( struct window_surface *old,
                                      struct window_surface *new );
 
 /* defwnd.c */
+extern BOOL adjust_window_rect( RECT *rect, DWORD style, BOOL menu, DWORD ex_style, UINT dpi );
 extern LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
                                     BOOL ansi );
 extern LRESULT desktop_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
@@ -215,7 +214,7 @@ extern BOOL client_to_screen( HWND hwnd, POINT *pt );
 extern void destroy_thread_windows(void);
 extern LRESULT destroy_window( HWND hwnd );
 extern BOOL enable_window( HWND hwnd, BOOL enable );
-extern BOOL get_client_rect( HWND hwnd, RECT *rect );
+extern BOOL get_client_rect( HWND hwnd, RECT *rect, UINT dpi );
 extern HWND get_desktop_window(void);
 extern UINT get_dpi_for_window( HWND hwnd );
 extern HWND get_full_window_handle( HWND hwnd );

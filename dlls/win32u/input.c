@@ -1293,7 +1293,11 @@ HKL WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags )
  */
 UINT WINAPI NtUserGetKeyboardLayoutList( INT size, HKL *layouts )
 {
-    DWORD count;
+    char buffer[4096];
+    KEY_NODE_INFORMATION *key_info = (KEY_NODE_INFORMATION *)buffer;
+    KEY_VALUE_PARTIAL_INFORMATION *value_info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+    DWORD count, tmp, i = 0;
+    HKEY hkey, subkey;
     HKL layout;
 
     TRACE_(keyboard)( "size %d, layouts %p.\n", size, layouts );
@@ -1307,6 +1311,33 @@ UINT WINAPI NtUserGetKeyboardLayoutList( INT size, HKL *layouts )
     if (size && layouts)
     {
         layouts[count - 1] = layout;
+        if (count == size) return count;
+    }
+
+    if ((hkey = reg_open_key( NULL, keyboard_layouts_keyW, sizeof(keyboard_layouts_keyW) )))
+    {
+        while (!NtEnumerateKey( hkey, i++, KeyNodeInformation, key_info,
+                                sizeof(buffer) - sizeof(WCHAR), &tmp ))
+        {
+            if (!(subkey = reg_open_key( hkey, key_info->Name, key_info->NameLength ))) continue;
+            key_info->Name[key_info->NameLength / sizeof(WCHAR)] = 0;
+            tmp = wcstoul( key_info->Name, NULL, 16 );
+            if (query_reg_ascii_value( subkey, "Layout Id", value_info, sizeof(buffer) ) &&
+                value_info->Type == REG_SZ)
+                tmp = 0xf000 | (wcstoul( (const WCHAR *)value_info->Data, NULL, 16 ) & 0xfff);
+            NtClose( subkey );
+
+            tmp = MAKELONG( LOWORD( layout ), LOWORD( tmp ) );
+            if (layout == UlongToHandle( tmp )) continue;
+
+            count++;
+            if (size && layouts)
+            {
+                layouts[count - 1] = UlongToHandle( tmp );
+                if (count == size) break;
+            }
+        }
+        NtClose( hkey );
     }
 
     return count;
@@ -1831,8 +1862,7 @@ static HWND set_focus_window( HWND hwnd )
             send_message( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_ACTIVATE,
                           HandleToUlong(hwnd) );
 
-        if (previous)
-            NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, 0 );
+        NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, 0 );
 
         send_message( hwnd, WM_SETFOCUS, (WPARAM)previous, 0 );
     }
@@ -1846,7 +1876,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
 {
     HWND previous = get_active_window();
     BOOL ret;
-    DWORD winflags, old_thread, new_thread;
+    DWORD old_thread, new_thread;
     CBTACTIVATESTRUCT cbt;
 
     if (previous == hwnd)
@@ -1855,24 +1885,16 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
         goto done;
     }
 
-    /* Prevent a recursive activation loop with the activation messages */
-    winflags = win_set_flags(hwnd, WIN_IS_IN_ACTIVATION, 0);
-    if (!(winflags & WIN_IS_IN_ACTIVATION))
+    /* call CBT hook chain */
+    cbt.fMouse     = mouse;
+    cbt.hWndActive = previous;
+    if (call_hooks( WH_CBT, HCBT_ACTIVATE, (WPARAM)hwnd, (LPARAM)&cbt, sizeof(cbt) )) return FALSE;
+
+    if (is_window( previous ))
     {
-        ret = FALSE;
-
-        /* call CBT hook chain */
-        cbt.fMouse     = mouse;
-        cbt.hWndActive = previous;
-        if (call_hooks( WH_CBT, HCBT_ACTIVATE, (WPARAM)hwnd, (LPARAM)&cbt, sizeof(cbt) ))
-            goto clear_flags;
-
-        if (is_window(previous))
-        {
-            send_message( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
-            send_message( previous, WM_ACTIVATE,
-                          MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ), (LPARAM)hwnd );
-        }
+        send_message( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
+        send_message( previous, WM_ACTIVATE,
+                      MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ), (LPARAM)hwnd );
     }
 
     SERVER_START_REQ( set_active_window )
@@ -1888,15 +1910,13 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
 
     if (hwnd)
     {
+        NtUserNotifyWinEvent( EVENT_SYSTEM_FOREGROUND, hwnd, 0, 0 );
+
         /* send palette messages */
         if (send_message( hwnd, WM_QUERYNEWPALETTE, 0, 0 ))
             send_message_timeout( HWND_BROADCAST, WM_PALETTEISCHANGING, (WPARAM)hwnd, 0,
                                   SMTO_ABORTIFHUNG, 2000, FALSE );
-        if (!is_window(hwnd))
-        {
-            ret = FALSE;
-            goto clear_flags;
-        }
+        if (!is_window(hwnd)) return FALSE;
     }
 
     old_thread = previous ? get_window_thread( previous, NULL ) : 0;
@@ -1928,24 +1948,15 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
         }
     }
 
-    if (!(winflags & WIN_IS_IN_ACTIVATION) && is_window(hwnd))
+    if (is_window(hwnd))
     {
         send_message( hwnd, WM_NCACTIVATE, hwnd == NtUserGetForegroundWindow(), (LPARAM)previous );
         send_message( hwnd, WM_ACTIVATE,
                       MAKEWPARAM( mouse ? WA_CLICKACTIVE : WA_ACTIVE, is_iconic(hwnd) ),
                       (LPARAM)previous );
-
-        send_message( hwnd, WM_NCPOINTERUP, 0, 0);
-
         if (NtUserGetAncestor( hwnd, GA_PARENT ) == get_desktop_window())
             NtUserPostMessage( get_desktop_window(), WM_PARENTNOTIFY, WM_NCACTIVATE, (LPARAM)hwnd );
-
-        if (hwnd == NtUserGetForegroundWindow() && !is_iconic( hwnd ))
-            NtUserSetActiveWindow( hwnd );
-
     }
-
-    user_driver->pSetActiveWindow( hwnd );
 
     /* now change focus if necessary */
     if (focus)
@@ -1962,13 +1973,9 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
         }
     }
 
-clear_flags:
-    win_set_flags(hwnd, 0, WIN_IS_IN_ACTIVATION);
-
 done:
     if (hwnd) clip_fullscreen_window( hwnd, FALSE );
-
-    return ret;
+    return TRUE;
 }
 
 /**********************************************************************
@@ -2211,10 +2218,7 @@ BOOL WINAPI NtUserCreateCaret( HWND hwnd, HBITMAP bitmap, int width, int height 
         if ((ret = !wine_server_call_err( req )))
         {
             prev      = wine_server_ptr_handle( reply->previous );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             old_state = reply->old_state;
             hidden    = reply->old_hide;
         }
@@ -2254,10 +2258,7 @@ BOOL destroy_caret(void)
         if ((ret = !wine_server_call_err( req )))
         {
             prev      = wine_server_ptr_handle( reply->previous );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             old_state = reply->old_state;
             hidden    = reply->old_hide;
         }
@@ -2344,10 +2345,7 @@ BOOL set_caret_pos( int x, int y )
         if ((ret = !wine_server_call_err( req )))
         {
             hwnd      = wine_server_ptr_handle( reply->full_handle );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             old_state = reply->old_state;
             hidden    = reply->old_hide;
         }
@@ -2361,8 +2359,6 @@ BOOL set_caret_pos( int x, int y )
         r.left = x;
         r.top = y;
         display_caret( hwnd, &r );
-        if (user_driver->pUpdateCandidatePos)
-            user_driver->pUpdateCandidatePos( hwnd, &r );
         NtUserSetSystemTimer( hwnd, SYSTEM_TIMER_CARET, caret.timeout );
     }
     return ret;
@@ -2388,10 +2384,7 @@ BOOL WINAPI NtUserShowCaret( HWND hwnd )
         if ((ret = !wine_server_call_err( req )))
         {
             hwnd      = wine_server_ptr_handle( reply->full_handle );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             hidden    = reply->old_hide;
         }
     }
@@ -2400,8 +2393,6 @@ BOOL WINAPI NtUserShowCaret( HWND hwnd )
     if (ret && hidden == 1)  /* hidden was 1 so it's now 0 */
     {
         display_caret( hwnd, &r );
-        if (user_driver->pUpdateCandidatePos)
-            user_driver->pUpdateCandidatePos( hwnd, &r );
         NtUserSetSystemTimer( hwnd, SYSTEM_TIMER_CARET, caret.timeout );
     }
     return ret;
@@ -2428,10 +2419,7 @@ BOOL WINAPI NtUserHideCaret( HWND hwnd )
         if ((ret = !wine_server_call_err( req )))
         {
             hwnd      = wine_server_ptr_handle( reply->full_handle );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             old_state = reply->old_state;
             hidden    = reply->old_hide;
         }
@@ -2463,10 +2451,7 @@ void toggle_caret( HWND hwnd )
         if ((ret = !wine_server_call( req )))
         {
             hwnd      = wine_server_ptr_handle( reply->full_handle );
-            r.left    = reply->old_rect.left;
-            r.top     = reply->old_rect.top;
-            r.right   = reply->old_rect.right;
-            r.bottom  = reply->old_rect.bottom;
+            r         = wine_server_get_rect( reply->old_rect );
             hidden    = reply->old_hide;
         }
     }
@@ -2515,6 +2500,7 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     RECT rect;
     HMONITOR monitor;
     DWORD style;
+    UINT dpi;
     BOOL ret;
 
     if (hwnd == NtUserGetDesktopWindow()) return FALSE;
@@ -2526,8 +2512,9 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     /* maximized windows don't count as full screen */
     if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION) return FALSE;
 
-    if (!NtUserGetWindowRect( hwnd, &rect )) return FALSE;
-    if (!NtUserIsWindowRectFullScreen( &rect )) return FALSE;
+    dpi = get_dpi_for_window( hwnd );
+    if (!NtUserGetWindowRect( hwnd, &rect, dpi )) return FALSE;
+    if (!NtUserIsWindowRectFullScreen( &rect, dpi )) return FALSE;
     if (is_captured_by_system()) return FALSE;
     if (NtGetTickCount() - thread_info->clipping_reset < 1000) return FALSE;
     if (!reset && clipping_cursor && thread_info->clipping_cursor) return FALSE;  /* already clipping */
@@ -2546,10 +2533,7 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     SERVER_START_REQ( set_cursor )
     {
         req->flags = SET_CURSOR_CLIP | SET_CURSOR_FSCLIP;
-        req->clip.left   = monitor_info.rcMonitor.left;
-        req->clip.top    = monitor_info.rcMonitor.top;
-        req->clip.right  = monitor_info.rcMonitor.right;
-        req->clip.bottom = monitor_info.rcMonitor.bottom;
+        req->clip  = wine_server_rectangle( monitor_info.rcMonitor );
         ret = !wine_server_call( req );
     }
     SERVER_END_REQ;
@@ -2580,12 +2564,7 @@ BOOL get_clip_cursor( RECT *rect )
     {
         req->flags = 0;
         if ((ret = !wine_server_call( req )))
-        {
-            rect->left   = reply->new_clip.left;
-            rect->top    = reply->new_clip.top;
-            rect->right  = reply->new_clip.right;
-            rect->bottom = reply->new_clip.bottom;
-        }
+            *rect = wine_server_get_rect( reply->new_clip );
     }
     SERVER_END_REQ;
 
@@ -2660,10 +2639,7 @@ BOOL WINAPI NtUserClipCursor( const RECT *rect )
         if (rect)
         {
             req->flags       = SET_CURSOR_CLIP;
-            req->clip.left   = rect->left;
-            req->clip.top    = rect->top;
-            req->clip.right  = rect->right;
-            req->clip.bottom = rect->bottom;
+            req->clip        = wine_server_rectangle( *rect );
         }
         else req->flags = SET_CURSOR_NOCLIP;
 

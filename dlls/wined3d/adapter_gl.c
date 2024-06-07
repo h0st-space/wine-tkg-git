@@ -237,7 +237,6 @@ static const struct wined3d_extension_map gl_extension_map[] =
     {"GL_NV_vertex_program2_option",        NV_VERTEX_PROGRAM2_OPTION     },
     {"GL_NV_vertex_program3",               NV_VERTEX_PROGRAM3            },
     {"GL_NV_texture_barrier",               NV_TEXTURE_BARRIER            },
-    {"GL_NVX_gpu_memory_info",              NVX_GPU_MEMORY_INFO           },
 };
 
 static const struct wined3d_extension_map wgl_extension_map[] =
@@ -1012,17 +1011,6 @@ static const struct wined3d_gpu_description *query_gpu_description(const struct 
 
         gpu_description = wined3d_get_gpu_description(vendor, device);
     }
-    else if (gl_info->supported[NVX_GPU_MEMORY_INFO])
-    {
-        GLint vram_kb;
-        gl_info->gl_ops.gl.p_glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &vram_kb);
-
-        *vram_bytes = (UINT64)vram_kb * 1024;
-        TRACE("Got 0x%s as video memory from NVX_GPU_MEMORY_INFO extension.\n",
-                wine_dbgstr_longlong(*vram_bytes));
-
-        gpu_description = wined3d_get_gpu_description(vendor, device);
-    }
 
     if ((gpu_description_override = wined3d_get_user_override_gpu_description(vendor, device)))
         gpu_description = gpu_description_override;
@@ -1186,7 +1174,6 @@ static enum wined3d_gl_vendor wined3d_guess_gl_vendor(const struct wined3d_gl_in
         return GL_VENDOR_FGLRX;
 
     if (strstr(gl_vendor_string, "Mesa")
-            || strstr(gl_vendor_string, "Brian Paul")
             || strstr(gl_vendor_string, "X.Org")
             || strstr(gl_vendor_string, "Advanced Micro Devices, Inc.")
             || strstr(gl_vendor_string, "DRI R300 Project")
@@ -3847,67 +3834,10 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter_gl *adapter_gl,
     return TRUE;
 }
 
-static void WINE_GLAPI invalid_func(const void *data)
-{
-    ERR("Invalid vertex attribute function called.\n");
-    DebugBreak();
-}
-
-static void WINE_GLAPI invalid_texcoord_func(GLenum unit, const void *data)
-{
-    ERR("Invalid texcoord function called.\n");
-    DebugBreak();
-}
-
 static void WINE_GLAPI invalid_generic_attrib_func(GLuint idx, const void *data)
 {
     ERR("Invalid attribute function called.\n");
     DebugBreak();
-}
-
-/* Helper functions for providing vertex data to OpenGL. The arrays are
- * initialised based on the extension detection and are used in
- * draw_primitive_immediate_mode(). */
-static void WINE_GLAPI position_d3dcolor(const void *data)
-{
-    const struct wined3d_gl_info *gl_info = wined3d_context_gl_get_current()->gl_info;
-    DWORD pos = *((const DWORD *)data);
-
-    FIXME("Add a test for fixed function position from d3dcolor type.\n");
-    gl_info->gl_ops.gl.p_glVertex4s(D3DCOLOR_B_R(pos),
-            D3DCOLOR_B_G(pos),
-            D3DCOLOR_B_B(pos),
-            D3DCOLOR_B_A(pos));
-}
-
-static void WINE_GLAPI diffuse_d3dcolor(const void *data)
-{
-    const struct wined3d_gl_info *gl_info = wined3d_context_gl_get_current()->gl_info;
-    DWORD diffuseColor = *((const DWORD *)data);
-
-    gl_info->gl_ops.gl.p_glColor4ub(D3DCOLOR_B_R(diffuseColor),
-            D3DCOLOR_B_G(diffuseColor),
-            D3DCOLOR_B_B(diffuseColor),
-            D3DCOLOR_B_A(diffuseColor));
-}
-
-static void WINE_GLAPI specular_d3dcolor(const void *data)
-{
-    const struct wined3d_gl_info *gl_info = wined3d_context_gl_get_current()->gl_info;
-    DWORD specularColor = *((const DWORD *)data);
-    GLubyte d[] =
-    {
-        D3DCOLOR_B_R(specularColor),
-        D3DCOLOR_B_G(specularColor),
-        D3DCOLOR_B_B(specularColor)
-    };
-
-    gl_info->gl_ops.ext.p_glSecondaryColor3ubvEXT(d);
-}
-
-static void WINE_GLAPI warn_no_specular_func(const void *data)
-{
-    WARN("GL_EXT_secondary_color not supported.\n");
 }
 
 static void WINE_GLAPI generic_d3dcolor(GLuint idx, const void *data)
@@ -3963,58 +3893,7 @@ static void wined3d_adapter_init_ffp_attrib_ops(struct wined3d_adapter_gl *adapt
     unsigned int i;
 
     for (i = 0; i < WINED3D_FFP_EMIT_COUNT; ++i)
-    {
-        ops->position[i] = invalid_func;
-        ops->diffuse[i]  = invalid_func;
-        ops->specular[i] = invalid_func;
-        ops->normal[i]   = invalid_func;
-        ops->texcoord[i] = invalid_texcoord_func;
         ops->generic[i]  = invalid_generic_attrib_func;
-    }
-
-    ops->position[WINED3D_FFP_EMIT_FLOAT3]    = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glVertex3fv;
-    ops->position[WINED3D_FFP_EMIT_FLOAT4]    = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glVertex4fv;
-    ops->position[WINED3D_FFP_EMIT_D3DCOLOR]  = position_d3dcolor;
-    ops->position[WINED3D_FFP_EMIT_SHORT4]    = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glVertex2sv;
-
-    ops->diffuse[WINED3D_FFP_EMIT_FLOAT3]     = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glColor3fv;
-    ops->diffuse[WINED3D_FFP_EMIT_FLOAT4]     = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glColor4fv;
-    ops->diffuse[WINED3D_FFP_EMIT_D3DCOLOR]   = diffuse_d3dcolor;
-    ops->diffuse[WINED3D_FFP_EMIT_UBYTE4N]    = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glColor4ubv;
-    ops->diffuse[WINED3D_FFP_EMIT_SHORT4N]    = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glColor4sv;
-    ops->diffuse[WINED3D_FFP_EMIT_USHORT4N]   = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glColor4usv;
-
-    /* No 4 component entry points here. */
-    if (gl_info->supported[EXT_SECONDARY_COLOR])
-        ops->specular[WINED3D_FFP_EMIT_FLOAT3]    = (wined3d_ffp_attrib_func)GL_EXTCALL(glSecondaryColor3fvEXT);
-    else
-        ops->specular[WINED3D_FFP_EMIT_FLOAT3]    = warn_no_specular_func;
-    if (gl_info->supported[EXT_SECONDARY_COLOR])
-        ops->specular[WINED3D_FFP_EMIT_D3DCOLOR]  = specular_d3dcolor;
-    else
-        ops->specular[WINED3D_FFP_EMIT_D3DCOLOR]  = warn_no_specular_func;
-
-    /* Only 3 component entry points here. Test how others behave. Float4
-     * normals are used by one of our tests, trying to pass it to the pixel
-     * shader, which fails on Windows. */
-    ops->normal[WINED3D_FFP_EMIT_FLOAT3]      = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glNormal3fv;
-    /* Just ignore the 4th value. */
-    ops->normal[WINED3D_FFP_EMIT_FLOAT4]      = (wined3d_ffp_attrib_func)gl_info->gl_ops.gl.p_glNormal3fv;
-
-    ops->texcoord[WINED3D_FFP_EMIT_FLOAT1]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord1fvARB;
-    ops->texcoord[WINED3D_FFP_EMIT_FLOAT2]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord2fvARB;
-    ops->texcoord[WINED3D_FFP_EMIT_FLOAT3]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord3fvARB;
-    ops->texcoord[WINED3D_FFP_EMIT_FLOAT4]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord4fvARB;
-    ops->texcoord[WINED3D_FFP_EMIT_SHORT2]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord2svARB;
-    ops->texcoord[WINED3D_FFP_EMIT_SHORT4]    = (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord4svARB;
-    if (gl_info->supported[NV_HALF_FLOAT])
-    {
-        /* Not supported by ARB_HALF_FLOAT_VERTEX, so check for NV_HALF_FLOAT. */
-        ops->texcoord[WINED3D_FFP_EMIT_FLOAT16_2] =
-                (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord2hvNV;
-        ops->texcoord[WINED3D_FFP_EMIT_FLOAT16_4] =
-                (wined3d_ffp_texcoord_func)gl_info->gl_ops.ext.p_glMultiTexCoord4hvNV;
-    }
 
     ops->generic[WINED3D_FFP_EMIT_FLOAT1]     = (wined3d_generic_attrib_func)gl_info->gl_ops.ext.p_glVertexAttrib1fv;
     ops->generic[WINED3D_FFP_EMIT_FLOAT2]     = (wined3d_generic_attrib_func)gl_info->gl_ops.ext.p_glVertexAttrib2fv;
@@ -4242,7 +4121,6 @@ static void adapter_gl_get_wined3d_caps(const struct wined3d_adapter *adapter, s
     const struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
 
     caps->ddraw_caps.dds_caps |= WINEDDSCAPS_BACKBUFFER
-            | WINEDDSCAPS_FLIP
             | WINEDDSCAPS_COMPLEX
             | WINEDDSCAPS_FRONTBUFFER
             | WINEDDSCAPS_3DDEVICE
@@ -5031,7 +4909,6 @@ static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_
     d3d_info->wined3d_creation_flags = wined3d_creation_flags;
     d3d_info->emulated_flatshading = vertex_caps.emulated_flatshading;
     d3d_info->ffp_alpha_test = !!gl_info->supported[WINED3D_GL_LEGACY_CONTEXT];
-    d3d_info->vs_clipping = shader_caps.wined3d_caps & WINED3D_SHADER_CAP_VS_CLIPPING;
     d3d_info->shader_double_precision = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_DOUBLE_PRECISION);
     d3d_info->shader_output_interpolation = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_OUTPUT_INTERPOLATION);
     d3d_info->viewport_array_index_any_shader = !!gl_info->supported[ARB_SHADER_VIEWPORT_LAYER_ARRAY];
