@@ -320,13 +320,19 @@ static inline unsigned int dir_info_size( FILE_INFORMATION_CLASS class, unsigned
     }
 }
 
+static BOOL is_wildcard( WCHAR c )
+{
+    return c == '*' || c == '?' || c == '>' || c == '<' || c == '\"';
+}
+
 static inline BOOL has_wildcard( const UNICODE_STRING *mask )
 {
     int i;
 
     if (!mask) return TRUE;
     for (i = 0; i < mask->Length / sizeof(WCHAR); i++)
-        if (mask->Buffer[i] == '*' || mask->Buffer[i] == '?') return TRUE;
+        if (is_wildcard( mask->Buffer[i] )) return TRUE;
+
     return FALSE;
 }
 
@@ -1383,13 +1389,17 @@ static ULONG hash_short_file_name( const WCHAR *name, int length, LPWSTR buffer 
     }
 
     /* Find last dot for start of the extension */
-    for (p = name + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
+    p = name;
+    while (*p == '.') ++p;
+    for (p = p + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
 
     /* Copy first 4 chars, replacing invalid chars with '_' */
-    for (i = 4, p = name, dst = buffer; i > 0; i--, p++)
+    for (i = 4, p = name, dst = buffer; i > 0; p++)
     {
         if (p == end || p == ext) break;
+        if (*p == '.') continue;
         *dst++ = is_invalid_dos_char(*p) ? '_' : *p;
+        i--;
     }
     /* Pad to 5 chars with '~' */
     while (i-- >= 0) *dst++ = '~';
@@ -1411,29 +1421,14 @@ static ULONG hash_short_file_name( const WCHAR *name, int length, LPWSTR buffer 
 
 
 /***********************************************************************
- *           match_filename
+ *           match_filename_part
  *
- * Check a long file name against a mask.
+ * Recursive helper for match_filename().
  *
- * Tests (done in W95 DOS shell - case insensitive):
- * *.txt			test1.test.txt				*
- * *st1*			test1.txt				*
- * *.t??????.t*			test1.ta.tornado.txt			*
- * *tornado*			test1.ta.tornado.txt			*
- * t*t				test1.ta.tornado.txt			*
- * ?est*			test1.txt				*
- * ?est???			test1.txt				-
- * *test1.txt*			test1.txt				*
- * h?l?o*t.dat			hellothisisatest.dat			*
  */
-static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRING *mask_str )
+static BOOLEAN match_filename_part( const WCHAR *name, const WCHAR *name_end, const WCHAR *mask, const WCHAR *mask_end )
 {
-    BOOL mismatch;
-    const WCHAR *mask = mask_str->Buffer;
-    const WCHAR *name_end = name + length;
-    const WCHAR *mask_end = mask + mask_str->Length / sizeof(WCHAR);
-    const WCHAR *lastjoker = NULL;
-    const WCHAR *next_to_retry = NULL;
+    WCHAR c;
 
     while (name < name_end && mask < mask_end)
     {
@@ -1443,53 +1438,98 @@ static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRI
             mask++;
             while (mask < mask_end && *mask == '*') mask++;  /* Skip consecutive '*' */
             if (mask == mask_end) return TRUE; /* end of mask is all '*', so match */
-            lastjoker = mask;
 
-            /* skip to the next match after the joker(s) */
-            if (is_case_sensitive)
-                while (name < name_end && (*name != *mask)) name++;
-            else
-                while (name < name_end && (towupper(*name) != towupper(*mask))) name++;
-            next_to_retry = name;
-            break;
-        case '?':
-        case '>':
-            mask++;
-            name++;
-            break;
-        default:
-            if (is_case_sensitive) mismatch = (*mask != *name);
-            else mismatch = (towupper(*mask) != towupper(*name));
-
-            if (!mismatch)
+            while (name < name_end)
             {
-                mask++;
-                name++;
-                if (mask == mask_end)
+                c = *mask == '"' ? '.' : *mask;
+                if (!is_wildcard(c))
                 {
-                    if (name == name_end) return TRUE;
-                    if (lastjoker) mask = lastjoker;
+                    if (is_case_sensitive)
+                        while (name < name_end && (*name != c)) name++;
+                    else
+                        while (name < name_end && (towupper(*name) != towupper(c))) name++;
                 }
+                if (match_filename_part( name, name_end, mask, mask_end )) return TRUE;
+                ++name;
             }
-            else /* mismatch ! */
-            {
-                if (lastjoker) /* we had an '*', so we can try unlimitedly */
-                {
-                    mask = lastjoker;
+            break;
+        case '<':
+        {
+            const WCHAR *next_dot;
+            BOOL had_dot = FALSE;
 
-                    /* this scan sequence was a mismatch, so restart
-                     * 1 char after the first char we checked last time */
-                    next_to_retry++;
-                    name = next_to_retry;
+            ++mask;
+            while (name < name_end)
+            {
+                next_dot = name;
+                while (next_dot < name_end && *next_dot != '.') ++next_dot;
+                if (next_dot == name_end && had_dot) break;
+                if (next_dot < name_end)
+                {
+                    had_dot = TRUE;
+                    ++next_dot;
                 }
-                else return FALSE; /* bad luck */
+                if (mask < mask_end)
+                {
+                    while (name < next_dot)
+                    {
+                        c = *mask == '"' ? '.' : *mask;
+                        if (!is_wildcard(c))
+                        {
+                            if (is_case_sensitive)
+                                while (name < next_dot && (*name != c)) name++;
+                            else
+                                while (name < next_dot && (towupper(*name) != towupper(c))) name++;
+                        }
+                        if (match_filename_part( name, name_end, mask, mask_end )) return TRUE;
+                        ++name;
+                    }
+                }
+                name = next_dot;
             }
             break;
         }
+        case '?':
+            mask++;
+            name++;
+            break;
+        case '>':
+            mask++;
+            if (*name == '.')
+            {
+                while (mask < mask_end && *mask == '>') mask++;
+                if (mask == mask_end) name++;
+            }
+            else name++;
+            break;
+        default:
+            c = *mask == '"' ? '.' : *mask;
+            if (is_case_sensitive && c != *name) return FALSE;
+            if (!is_case_sensitive && towupper(c) != towupper(*name)) return FALSE;
+            mask++;
+            name++;
+            break;
+        }
     }
-    while (mask < mask_end && ((*mask == '.') || (*mask == '*')))
-        mask++;  /* Ignore trailing '.' or '*' in mask */
+    while (mask < mask_end && (*mask == '*' || *mask == '<' || *mask == '"' || *mask == '>'))
+        mask++;
     return (name == name_end && mask == mask_end);
+}
+
+
+/***********************************************************************
+ *           match_filename
+ *
+ * Check a file name against a mask.
+ *
+ */
+static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRING *mask_str )
+{
+    /* Special handling for parent directory. */
+    if (length == 2 && name[0] == '.' && name[1] == '.') --length;
+
+    return match_filename_part( name, name + length, mask_str->Buffer,
+                                mask_str->Buffer + mask_str->Length / sizeof(WCHAR));
 }
 
 
@@ -5458,230 +5498,6 @@ static unsigned int set_pending_write( HANDLE device )
     return status;
 }
 
-static pthread_mutex_t async_file_read_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t async_file_read_cond = PTHREAD_COND_INITIALIZER;
-
-struct async_file_read_job
-{
-    HANDLE handle;
-    int unix_handle;
-    int needs_close;
-    HANDLE event;
-    IO_STATUS_BLOCK *io;
-    void *buffer;
-    ULONG length;
-    LARGE_INTEGER offset;
-    DWORD thread_id;
-    LONG  cancelled;
-    struct list queue_entry;
-    struct async_file_read_job *next;
-};
-
-
-static struct list async_file_read_queue = LIST_INIT( async_file_read_queue );
-static struct async_file_read_job *async_file_read_running, *async_file_read_free;
-
-static void async_file_complete_io( struct async_file_read_job *job, NTSTATUS status, ULONG total )
-{
-    job->io->Status = status;
-    job->io->Information = total;
-
-    if (job->event) NtSetEvent( job->event, NULL );
-}
-
-static void *async_file_read_thread(void *dummy)
-{
-    struct async_file_read_job *job, *ptr;
-    ULONG buffer_length = 0;
-    void *buffer = NULL;
-    struct list *entry;
-    NTSTATUS status;
-    ULONG total;
-    int result;
-
-    pthread_mutex_lock( &async_file_read_mutex );
-    while (1)
-    {
-        while (!(entry = list_head( &async_file_read_queue )))
-        {
-            pthread_cond_wait( &async_file_read_cond, &async_file_read_mutex );
-            continue;
-        }
-
-        job = LIST_ENTRY( entry, struct async_file_read_job, queue_entry );
-        list_remove( entry );
-
-        total = 0;
-
-        if ( job->cancelled )
-        {
-            pthread_mutex_unlock( &async_file_read_mutex );
-            status = STATUS_CANCELLED;
-            goto done;
-        }
-
-        job->next = async_file_read_running;
-        async_file_read_running = job;
-        pthread_mutex_unlock( &async_file_read_mutex );
-
-        if (!buffer_length)
-        {
-            buffer = malloc(job->length);
-            buffer_length = job->length;
-        }
-        else if (buffer_length < job->length)
-        {
-            buffer = realloc(buffer, job->length);
-            buffer_length = job->length;
-        }
-
-        while ((result = pread( job->unix_handle, buffer, job->length, job->offset.QuadPart )) == -1)
-        {
-            if (errno != EINTR)
-            {
-                status = errno_to_status( errno );
-                goto done;
-            }
-            if (job->cancelled)
-                break;
-        }
-
-        total = result;
-        status = (total || !job->length) ? STATUS_SUCCESS : STATUS_END_OF_FILE;
-done:
-        if (job->needs_close) close( job->unix_handle );
-
-        if (!InterlockedCompareExchange(&job->cancelled, 1, 0))
-        {
-            if (status == STATUS_SUCCESS)
-                memcpy( job->buffer, buffer, total );
-
-            async_file_complete_io( job, status, total );
-        }
-
-        pthread_mutex_lock( &async_file_read_mutex );
-
-        if (status != STATUS_CANCELLED)
-        {
-            ptr = async_file_read_running;
-            if (job == ptr)
-            {
-                async_file_read_running = job->next;
-            }
-            else
-            {
-                while (ptr && ptr->next != job)
-                    ptr = ptr->next;
-
-                assert( ptr );
-                ptr->next = job->next;
-            }
-        }
-
-        job->next = async_file_read_free;
-        async_file_read_free = job;
-    }
-
-    return NULL;
-}
-
-static pthread_once_t async_file_read_once = PTHREAD_ONCE_INIT;
-
-static void async_file_read_init(void)
-{
-    pthread_t async_file_read_thread_id;
-    pthread_attr_t pthread_attr;
-
-    ERR("HACK: AC Odyssey async read workaround.\n");
-
-    pthread_attr_init( &pthread_attr );
-    pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM );
-    pthread_attr_setdetachstate( &pthread_attr, PTHREAD_CREATE_DETACHED );
-
-    pthread_create( &async_file_read_thread_id, &pthread_attr, (void * (*)(void *))async_file_read_thread, NULL);
-    pthread_attr_destroy( &pthread_attr );
-}
-
-static NTSTATUS queue_async_file_read( HANDLE handle, int unix_handle, int needs_close, HANDLE event,
-                            IO_STATUS_BLOCK *io, void *buffer, ULONG length, LARGE_INTEGER *offset )
-{
-    struct async_file_read_job *job;
-
-    pthread_once( &async_file_read_once, async_file_read_init );
-
-    NtResetEvent( event, NULL );
-
-    pthread_mutex_lock( &async_file_read_mutex );
-
-    if (async_file_read_free)
-    {
-        job = async_file_read_free;
-        async_file_read_free = async_file_read_free->next;
-    }
-    else
-    {
-        if (!(job = malloc( sizeof(*job) )))
-        {
-            pthread_mutex_unlock( &async_file_read_mutex );
-            return STATUS_NO_MEMORY;
-        }
-    }
-
-    job->handle = handle;
-    job->unix_handle = unix_handle;
-    job->needs_close = needs_close;
-    job->event = event;
-    job->io = io;
-    job->buffer = buffer;
-    job->length = length;
-    job->offset = *offset;
-    job->thread_id = GetCurrentThreadId();
-    job->cancelled = 0;
-
-    list_add_tail( &async_file_read_queue, &job->queue_entry );
-
-    pthread_cond_signal( &async_file_read_cond );
-    pthread_mutex_unlock( &async_file_read_mutex );
-
-    return STATUS_PENDING;
-}
-
-static NTSTATUS cancel_async_file_read( HANDLE handle, IO_STATUS_BLOCK *io )
-{
-    DWORD thread_id = GetCurrentThreadId();
-    struct async_file_read_job *job;
-    unsigned int count = 0;
-
-    TRACE( "handle %p, io %p.\n", handle, io );
-
-    pthread_mutex_lock( &async_file_read_mutex );
-    job = async_file_read_running;
-    while (job)
-    {
-        if (((io && job->io == io)
-                || (!io && job->handle == handle && job->thread_id == thread_id))
-                && !InterlockedCompareExchange(&job->cancelled, 1, 0))
-        {
-            async_file_complete_io( job, STATUS_CANCELLED, 0 );
-            ++count;
-        }
-        job = job->next;
-    }
-
-    LIST_FOR_EACH_ENTRY( job, &async_file_read_queue, struct async_file_read_job, queue_entry )
-    {
-        if (((io && job->io == io)
-                || (!io && job->handle == handle && job->thread_id == thread_id))
-                && !InterlockedCompareExchange(&job->cancelled, 1, 0))
-        {
-            async_file_complete_io( job, STATUS_CANCELLED, 0 );
-            ++count;
-        }
-    }
-
-    pthread_mutex_unlock( &async_file_read_mutex );
-    return count ? STATUS_SUCCESS : STATUS_NOT_FOUND;
-}
 
 /******************************************************************************
  *              NtReadFile   (NTDLL.@)
@@ -5721,13 +5537,6 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
         {
             status = STATUS_INVALID_PARAMETER;
             goto done;
-        }
-
-        if (ac_odyssey && async_read && length && event && !apc)
-        {
-            status = queue_async_file_read( handle, unix_handle, needs_close, event, io, buffer, length, offset );
-            needs_close = 0;
-            goto err;
         }
 
         if (offset && offset->QuadPart != FILE_USE_FILE_POINTER_POSITION)
@@ -6539,9 +6348,6 @@ NTSTATUS WINAPI NtCancelIoFile( HANDLE handle, IO_STATUS_BLOCK *io_status )
 
     TRACE( "%p %p\n", handle, io_status );
 
-    if (ac_odyssey && !cancel_async_file_read( handle, NULL ))
-        return (io_status->Status = STATUS_SUCCESS);
-
     SERVER_START_REQ( cancel_async )
     {
         req->handle      = wine_server_obj_handle( handle );
@@ -6566,9 +6372,6 @@ NTSTATUS WINAPI NtCancelIoFileEx( HANDLE handle, IO_STATUS_BLOCK *io, IO_STATUS_
     unsigned int status;
 
     TRACE( "%p %p %p\n", handle, io, io_status );
-
-    if (ac_odyssey && !cancel_async_file_read( handle, io ))
-        return (io_status->Status = STATUS_SUCCESS);
 
     SERVER_START_REQ( cancel_async )
     {
@@ -6654,7 +6457,7 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
         }
         if (handle)
         {
-            NtWaitForSingleObject( handle, FALSE, NULL );
+            server_wait_for_object( handle, FALSE, NULL );
             NtClose( handle );
         }
         else  /* Unix lock conflict, sleep a bit and retry */

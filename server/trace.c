@@ -1372,6 +1372,40 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
     fputc( '}', stderr );
 }
 
+static void dump_varargs_directory_entries( const char *prefix, data_size_t size )
+{
+    fprintf( stderr, "%s{", prefix );
+    while (size)
+    {
+        const struct directory_entry *entry = cur_data;
+        data_size_t entry_size;
+        const char *next;
+
+        if (size < sizeof(*entry) ||
+            (size - sizeof(*entry) < entry->name_len) ||
+            (size - sizeof(*entry) - entry->name_len < entry->type_len))
+        {
+            fprintf( stderr, "***invalid***}" );
+            remove_data( size );
+            return;
+        }
+
+        next = (const char *)(entry + 1);
+        fprintf( stderr, "{name=L\"" );
+        dump_strW( (const WCHAR *)next, entry->name_len, stderr, "\"\"" );
+        next += entry->name_len;
+        fprintf( stderr, "\",type=L\"" );
+        dump_strW( (const WCHAR *)next, entry->type_len, stderr, "\"\"" );
+        fprintf( stderr, "\"}" );
+
+        entry_size = min( size, (sizeof(*entry) + entry->name_len + entry->type_len + 3) & ~3 );
+        size -= entry_size;
+        remove_data( entry_size );
+        if (size) fputc( ',', stderr );
+    }
+    fputc( '}', stderr );
+}
+
 typedef void (*dump_func)( const void *req );
 
 /* Everything below this line is generated automatically by tools/make_requests */
@@ -4085,18 +4119,18 @@ static void dump_open_directory_reply( const struct open_directory_reply *req )
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_get_directory_entry_request( const struct get_directory_entry_request *req )
+static void dump_get_directory_entries_request( const struct get_directory_entries_request *req )
 {
     fprintf( stderr, " handle=%04x", req->handle );
     fprintf( stderr, ", index=%08x", req->index );
+    fprintf( stderr, ", max_count=%08x", req->max_count );
 }
 
-static void dump_get_directory_entry_reply( const struct get_directory_entry_reply *req )
+static void dump_get_directory_entries_reply( const struct get_directory_entries_reply *req )
 {
     fprintf( stderr, " total_len=%u", req->total_len );
-    fprintf( stderr, ", name_len=%u", req->name_len );
-    dump_varargs_unicode_str( ", name=", min(cur_size,req->name_len) );
-    dump_varargs_unicode_str( ", type=", cur_size );
+    fprintf( stderr, ", count=%08x", req->count );
+    dump_varargs_directory_entries( ", entries=", cur_size );
 }
 
 static void dump_create_symlink_request( const struct create_symlink_request *req )
@@ -4590,113 +4624,57 @@ static void dump_get_next_thread_reply( const struct get_next_thread_reply *req 
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_create_esync_request( const struct create_esync_request *req )
+static void dump_get_linux_sync_device_request( const struct get_linux_sync_device_request *req )
 {
-    fprintf( stderr, " access=%08x", req->access );
-    fprintf( stderr, ", initval=%d", req->initval );
-    fprintf( stderr, ", type=%d", req->type );
-    fprintf( stderr, ", max=%d", req->max );
-    dump_varargs_object_attributes( ", objattr=", cur_size );
 }
 
-static void dump_create_esync_reply( const struct create_esync_reply *req )
-{
-    fprintf( stderr, " handle=%04x", req->handle );
-    fprintf( stderr, ", type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
-}
-
-static void dump_open_esync_request( const struct open_esync_request *req )
-{
-    fprintf( stderr, " access=%08x", req->access );
-    fprintf( stderr, ", attributes=%08x", req->attributes );
-    fprintf( stderr, ", rootdir=%04x", req->rootdir );
-    fprintf( stderr, ", type=%d", req->type );
-    dump_varargs_unicode_str( ", name=", cur_size );
-}
-
-static void dump_open_esync_reply( const struct open_esync_reply *req )
-{
-    fprintf( stderr, " handle=%04x", req->handle );
-    fprintf( stderr, ", type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
-}
-
-static void dump_get_esync_fd_request( const struct get_esync_fd_request *req )
+static void dump_get_linux_sync_device_reply( const struct get_linux_sync_device_reply *req )
 {
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_get_esync_fd_reply( const struct get_esync_fd_reply *req )
-{
-    fprintf( stderr, " type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
-}
-
-static void dump_esync_msgwait_request( const struct esync_msgwait_request *req )
-{
-    fprintf( stderr, " in_msgwait=%d", req->in_msgwait );
-}
-
-static void dump_get_esync_apc_fd_request( const struct get_esync_apc_fd_request *req )
-{
-}
-
-static void dump_create_fsync_request( const struct create_fsync_request *req )
-{
-    fprintf( stderr, " access=%08x", req->access );
-    fprintf( stderr, ", low=%d", req->low );
-    fprintf( stderr, ", high=%d", req->high );
-    fprintf( stderr, ", type=%d", req->type );
-    dump_varargs_object_attributes( ", objattr=", cur_size );
-}
-
-static void dump_create_fsync_reply( const struct create_fsync_reply *req )
-{
-    fprintf( stderr, " handle=%04x", req->handle );
-    fprintf( stderr, ", type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
-}
-
-static void dump_open_fsync_request( const struct open_fsync_request *req )
-{
-    fprintf( stderr, " access=%08x", req->access );
-    fprintf( stderr, ", attributes=%08x", req->attributes );
-    fprintf( stderr, ", rootdir=%04x", req->rootdir );
-    fprintf( stderr, ", type=%d", req->type );
-    dump_varargs_unicode_str( ", name=", cur_size );
-}
-
-static void dump_open_fsync_reply( const struct open_fsync_reply *req )
-{
-    fprintf( stderr, " handle=%04x", req->handle );
-    fprintf( stderr, ", type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
-}
-
-static void dump_get_fsync_idx_request( const struct get_fsync_idx_request *req )
+static void dump_get_linux_sync_obj_request( const struct get_linux_sync_obj_request *req )
 {
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_get_fsync_idx_reply( const struct get_fsync_idx_reply *req )
+static void dump_get_linux_sync_obj_reply( const struct get_linux_sync_obj_reply *req )
 {
-    fprintf( stderr, " type=%d", req->type );
-    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", type=%d", req->type );
+    fprintf( stderr, ", access=%08x", req->access );
 }
 
-static void dump_fsync_msgwait_request( const struct fsync_msgwait_request *req )
+static void dump_fast_select_queue_request( const struct fast_select_queue_request *req )
 {
-    fprintf( stderr, " in_msgwait=%d", req->in_msgwait );
+    fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_get_fsync_apc_idx_request( const struct get_fsync_apc_idx_request *req )
+static void dump_fast_unselect_queue_request( const struct fast_unselect_queue_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", signaled=%d", req->signaled );
+}
+
+static void dump_set_keyboard_repeat_request( const struct set_keyboard_repeat_request *req )
+{
+    fprintf( stderr, " enable=%d", req->enable );
+    fprintf( stderr, ", delay=%d", req->delay );
+    fprintf( stderr, ", period=%d", req->period );
+}
+
+static void dump_set_keyboard_repeat_reply( const struct set_keyboard_repeat_reply *req )
+{
+    fprintf( stderr, " enable=%d", req->enable );
+}
+
+static void dump_get_fast_alert_event_request( const struct get_fast_alert_event_request *req )
 {
 }
 
-static void dump_get_fsync_apc_idx_reply( const struct get_fsync_apc_idx_reply *req )
+static void dump_get_fast_alert_event_reply( const struct get_fast_alert_event_reply *req )
 {
-    fprintf( stderr, " shm_idx=%08x", req->shm_idx );
+    fprintf( stderr, " handle=%04x", req->handle );
 }
 
 static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
@@ -4933,7 +4911,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_set_mailslot_info_request,
     (dump_func)dump_create_directory_request,
     (dump_func)dump_open_directory_request,
-    (dump_func)dump_get_directory_entry_request,
+    (dump_func)dump_get_directory_entries_request,
     (dump_func)dump_create_symlink_request,
     (dump_func)dump_open_symlink_request,
     (dump_func)dump_query_symlink_request,
@@ -4984,16 +4962,12 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_suspend_process_request,
     (dump_func)dump_resume_process_request,
     (dump_func)dump_get_next_thread_request,
-    (dump_func)dump_create_esync_request,
-    (dump_func)dump_open_esync_request,
-    (dump_func)dump_get_esync_fd_request,
-    (dump_func)dump_esync_msgwait_request,
-    (dump_func)dump_get_esync_apc_fd_request,
-    (dump_func)dump_create_fsync_request,
-    (dump_func)dump_open_fsync_request,
-    (dump_func)dump_get_fsync_idx_request,
-    (dump_func)dump_fsync_msgwait_request,
-    (dump_func)dump_get_fsync_apc_idx_request,
+    (dump_func)dump_get_linux_sync_device_request,
+    (dump_func)dump_get_linux_sync_obj_request,
+    (dump_func)dump_fast_select_queue_request,
+    (dump_func)dump_fast_unselect_queue_request,
+    (dump_func)dump_set_keyboard_repeat_request,
+    (dump_func)dump_get_fast_alert_event_request,
 };
 
 static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
@@ -5230,7 +5204,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_set_mailslot_info_reply,
     (dump_func)dump_create_directory_reply,
     (dump_func)dump_open_directory_reply,
-    (dump_func)dump_get_directory_entry_reply,
+    (dump_func)dump_get_directory_entries_reply,
     (dump_func)dump_create_symlink_reply,
     (dump_func)dump_open_symlink_reply,
     (dump_func)dump_query_symlink_reply,
@@ -5281,16 +5255,12 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     (dump_func)dump_get_next_thread_reply,
-    (dump_func)dump_create_esync_reply,
-    (dump_func)dump_open_esync_reply,
-    (dump_func)dump_get_esync_fd_reply,
+    (dump_func)dump_get_linux_sync_device_reply,
+    (dump_func)dump_get_linux_sync_obj_reply,
     NULL,
     NULL,
-    (dump_func)dump_create_fsync_reply,
-    (dump_func)dump_open_fsync_reply,
-    (dump_func)dump_get_fsync_idx_reply,
-    NULL,
-    (dump_func)dump_get_fsync_apc_idx_reply,
+    (dump_func)dump_set_keyboard_repeat_reply,
+    (dump_func)dump_get_fast_alert_event_reply,
 };
 
 static const char * const req_names[REQ_NB_REQUESTS] = {
@@ -5527,7 +5497,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "set_mailslot_info",
     "create_directory",
     "open_directory",
-    "get_directory_entry",
+    "get_directory_entries",
     "create_symlink",
     "open_symlink",
     "query_symlink",
@@ -5578,16 +5548,12 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "suspend_process",
     "resume_process",
     "get_next_thread",
-    "create_esync",
-    "open_esync",
-    "get_esync_fd",
-    "esync_msgwait",
-    "get_esync_apc_fd",
-    "create_fsync",
-    "open_fsync",
-    "get_fsync_idx",
-    "fsync_msgwait",
-    "get_fsync_apc_idx",
+    "get_linux_sync_device",
+    "get_linux_sync_obj",
+    "fast_select_queue",
+    "fast_unselect_queue",
+    "set_keyboard_repeat",
+    "get_fast_alert_event",
 };
 
 static const struct
@@ -5667,6 +5633,7 @@ static const struct
     { "KERNEL_APC",                  STATUS_KERNEL_APC },
     { "KEY_DELETED",                 STATUS_KEY_DELETED },
     { "MAPPED_FILE_SIZE_ZERO",       STATUS_MAPPED_FILE_SIZE_ZERO },
+    { "MORE_ENTRIES",                STATUS_MORE_ENTRIES },
     { "MUTANT_NOT_OWNED",            STATUS_MUTANT_NOT_OWNED },
     { "NAME_TOO_LONG",               STATUS_NAME_TOO_LONG },
     { "NETWORK_BUSY",                STATUS_NETWORK_BUSY },

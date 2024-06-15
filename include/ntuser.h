@@ -504,10 +504,10 @@ enum wine_internal_message
     WM_WINE_KEYBOARD_LL_HOOK,
     WM_WINE_MOUSE_LL_HOOK,
     WM_WINE_UPDATEWINDOWSTATE,
-    WM_WINE_DESKTOP_RESIZED,
     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
     WM_WINE_SETCURSOR,
+    WM_WINE_DESKTOP_RESIZED,
     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
 };
 
@@ -1414,14 +1414,16 @@ struct map_window_points_params
     HWND hwnd_to;
     POINT *points;
     UINT count;
+    UINT dpi;
 };
 
-static inline int NtUserMapWindowPoints( HWND hwnd_from, HWND hwnd_to, POINT *points, UINT count )
+static inline int NtUserMapWindowPoints( HWND hwnd_from, HWND hwnd_to, POINT *points, UINT count, UINT dpi )
 {
     struct map_window_points_params params;
     params.hwnd_to = hwnd_to;
     params.points = points;
     params.count = count;
+    params.dpi = dpi;
     return NtUserCallHwndParam( hwnd_from, (UINT_PTR)&params,
                                 NtUserCallHwndParam_MapWindowPoints );
 }

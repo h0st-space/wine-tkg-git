@@ -44,8 +44,6 @@
 #include "process.h"
 #include "request.h"
 #include "user.h"
-#include "esync.h"
-#include "fsync.h"
 
 #define WM_NCMOUSEFIRST WM_NCMOUSEMOVE
 #define WM_NCMOUSELAST  (WM_NCMOUSEFIRST+(WM_MOUSELAST-WM_MOUSEFIRST))
@@ -148,10 +146,8 @@ struct msg_queue
     struct hook_table     *hooks;           /* hook table */
     timeout_t              last_get_msg;    /* time of last get message call */
     int                    keystate_lock;   /* owns an input keystate lock */
-    int                    esync_fd;        /* esync file descriptor (signalled on message) */
-    int                    esync_in_msgwait; /* our thread is currently waiting on us */
-    unsigned int           fsync_idx;
-    int                    fsync_in_msgwait; /* our thread is currently waiting on us */
+    struct fast_sync      *fast_sync;       /* fast synchronization object */
+    int                    in_fast_wait;    /* are we in a client-side wait? */
 };
 
 struct hotkey
@@ -168,9 +164,8 @@ static void msg_queue_dump( struct object *obj, int verbose );
 static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry );
 static void msg_queue_remove_queue( struct object *obj, struct wait_queue_entry *entry );
 static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entry );
-static int msg_queue_get_esync_fd( struct object *obj, enum esync_type *type );
-static unsigned int msg_queue_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry );
+static struct fast_sync *msg_queue_get_fast_sync( struct object *obj );
 static void msg_queue_destroy( struct object *obj );
 static void msg_queue_poll_event( struct fd *fd, int event );
 static void thread_input_dump( struct object *obj, int verbose );
@@ -185,8 +180,6 @@ static const struct object_ops msg_queue_ops =
     msg_queue_add_queue,       /* add_queue */
     msg_queue_remove_queue,    /* remove_queue */
     msg_queue_signaled,        /* signaled */
-    msg_queue_get_esync_fd,    /* get_esync_fd */
-    msg_queue_get_fsync_idx,   /* get_fsync_idx */
     msg_queue_satisfied,       /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -199,6 +192,7 @@ static const struct object_ops msg_queue_ops =
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
+    msg_queue_get_fast_sync,   /* get_fast_sync */
     no_close_handle,           /* close_handle */
     msg_queue_destroy          /* destroy */
 };
@@ -224,8 +218,6 @@ static const struct object_ops thread_input_ops =
     no_add_queue,                 /* add_queue */
     NULL,                         /* remove_queue */
     NULL,                         /* signaled */
-    NULL,                         /* get_esync_fd */
-    NULL,                         /* get_fsync_idx */
     NULL,                         /* satisfied */
     no_signal,                    /* signal */
     no_get_fd,                    /* get_fd */
@@ -238,6 +230,7 @@ static const struct object_ops thread_input_ops =
     NULL,                         /* unlink_name */
     no_open_file,                 /* open_file */
     no_kernel_obj_list,           /* get_kernel_obj_list */
+    no_get_fast_sync,             /* get_fast_sync */
     no_close_handle,              /* close_handle */
     thread_input_destroy          /* destroy */
 };
@@ -326,21 +319,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         queue->hooks           = NULL;
         queue->last_get_msg    = current_time;
         queue->keystate_lock   = 0;
-        queue->esync_fd        = -1;
-        queue->esync_in_msgwait = 0;
-        queue->fsync_idx       = 0;
-        queue->fsync_in_msgwait = 0;
+        queue->fast_sync       = NULL;
+        queue->in_fast_wait    = 0;
         list_init( &queue->send_result );
         list_init( &queue->callback_result );
         list_init( &queue->pending_timers );
         list_init( &queue->expired_timers );
         for (i = 0; i < NB_MSG_KINDS; i++) list_init( &queue->msg_list[i] );
- 
-        if (do_fsync())
-            queue->fsync_idx = fsync_alloc_shm( 0, 0 );
- 
-        if (do_esync())
-            queue->esync_fd = esync_create_fd( 0, 0 );
 
         thread->queue = queue;
     }
@@ -622,7 +607,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
     }
     queue->wake_bits |= bits;
     queue->changed_bits |= bits;
-    if (is_signaled( queue )) wake_up( &queue->obj, 0 );
+    if (is_signaled( queue ))
+    {
+        wake_up( &queue->obj, 0 );
+        fast_set_event( queue->fast_sync );
+    }
 }
 
 /* clear some queue bits */
@@ -635,12 +624,8 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits 
         if (queue->keystate_lock) unlock_input_keystate( queue->input );
         queue->keystate_lock = 0;
     }
-
-    if (do_fsync() && !is_signaled( queue ))
-        fsync_clear( &queue->obj );
-
-    if (do_esync() && !is_signaled( queue ))
-        esync_clear( queue->esync_fd );
+    if (!is_signaled( queue ))
+        fast_reset_event( queue->fast_sync );
 }
 
 /* check if message is matched by the filter */
@@ -1121,11 +1106,8 @@ static int is_queue_hung( struct msg_queue *queue )
             return 0;  /* thread is waiting on queue -> not hung */
     }
 
-    if (do_fsync() && queue->fsync_in_msgwait)
-        return 0;   /* thread is waiting on queue in absentia -> not hung */
-
-    if (do_esync() && queue->esync_in_msgwait)
-        return 0;   /* thread is waiting on queue in absentia -> not hung */
+    if (queue->in_fast_wait)
+        return 0;  /* thread is waiting on queue in absentia -> not hung */
 
     return 1;
 }
@@ -1180,25 +1162,22 @@ static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entr
     return ret || is_signaled( queue );
 }
 
-static int msg_queue_get_esync_fd( struct object *obj, enum esync_type *type )
-{
-    struct msg_queue *queue = (struct msg_queue *)obj;
-    *type = ESYNC_QUEUE;
-    return queue->esync_fd;
-}
-
-static unsigned int msg_queue_get_fsync_idx( struct object *obj, enum fsync_type *type )
-{
-    struct msg_queue *queue = (struct msg_queue *)obj;
-    *type = FSYNC_QUEUE;
-    return queue->fsync_idx;
-}
-
 static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry )
 {
     struct msg_queue *queue = (struct msg_queue *)obj;
     queue->wake_mask = 0;
     queue->changed_mask = 0;
+    fast_reset_event( queue->fast_sync );
+}
+
+static struct fast_sync *msg_queue_get_fast_sync( struct object *obj )
+{
+    struct msg_queue *queue = (struct msg_queue *)obj;
+
+    if (!queue->fast_sync)
+        queue->fast_sync = fast_create_event( FAST_SYNC_QUEUE, is_signaled( queue ) );
+    if (queue->fast_sync) grab_object( queue->fast_sync );
+    return queue->fast_sync;
 }
 
 static void msg_queue_destroy( struct object *obj )
@@ -1238,6 +1217,7 @@ static void msg_queue_destroy( struct object *obj )
     release_object( queue->input );
     if (queue->hooks) release_object( queue->hooks );
     if (queue->fd) release_object( queue->fd );
+    if (queue->fast_sync) release_object( queue->fast_sync );
 }
 
 static void msg_queue_poll_event( struct fd *fd, int event )
@@ -1248,6 +1228,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
     if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
     else set_fd_events( queue->fd, 0 );
     wake_up( &queue->obj, 0 );
+    fast_set_event( queue->fast_sync );
 }
 
 static void thread_input_dump( struct object *obj, int verbose )
@@ -1577,27 +1558,6 @@ static void update_input_key_state( struct desktop *desktop, unsigned char *keys
     }
 }
 
-/* update the desktop key state according to a mouse message flags */
-static void update_desktop_mouse_state( struct desktop *desktop, unsigned int flags, lparam_t wparam )
-{
-    if (flags & MOUSEEVENTF_LEFTDOWN)
-        update_input_key_state( desktop, desktop->keystate, WM_LBUTTONDOWN, wparam );
-    if (flags & MOUSEEVENTF_LEFTUP)
-        update_input_key_state( desktop, desktop->keystate, WM_LBUTTONUP, wparam );
-    if (flags & MOUSEEVENTF_RIGHTDOWN)
-        update_input_key_state( desktop, desktop->keystate, WM_RBUTTONDOWN, wparam );
-    if (flags & MOUSEEVENTF_RIGHTUP)
-        update_input_key_state( desktop, desktop->keystate, WM_RBUTTONUP, wparam );
-    if (flags & MOUSEEVENTF_MIDDLEDOWN)
-        update_input_key_state( desktop, desktop->keystate, WM_MBUTTONDOWN, wparam );
-    if (flags & MOUSEEVENTF_MIDDLEUP)
-        update_input_key_state( desktop, desktop->keystate, WM_MBUTTONUP, wparam );
-    if (flags & MOUSEEVENTF_XDOWN)
-        update_input_key_state( desktop, desktop->keystate, WM_XBUTTONDOWN, wparam );
-    if (flags & MOUSEEVENTF_XUP)
-        update_input_key_state( desktop, desktop->keystate, WM_XBUTTONUP, wparam );
-}
-
 /* release the hardware message currently being processed by the given thread */
 static void release_hardware_message( struct msg_queue *queue, unsigned int hw_id )
 {
@@ -1726,6 +1686,19 @@ static void prepend_cursor_history( int x, int y, unsigned int time, lparam_t in
     pos->info = info;
 }
 
+static unsigned int get_rawinput_device_flags( struct process *process, struct message *msg )
+{
+    switch (get_hardware_msg_bit( msg->msg ))
+    {
+    case QS_KEY:
+        return process->rawinput_kbd ? process->rawinput_kbd->flags : 0;
+    case QS_MOUSEMOVE:
+    case QS_MOUSEBUTTON:
+        return process->rawinput_mouse ? process->rawinput_mouse->flags : 0;
+    }
+    return 0;
+}
+
 /* queue a hardware message into a given thread input */
 static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue )
 {
@@ -1734,6 +1707,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
     struct thread_input *input;
     struct hardware_msg_data *msg_data = msg->data;
     unsigned int msg_code;
+    int flags;
 
     update_input_key_state( desktop, desktop->keystate, msg->msg, msg->wparam );
     last_input_time = get_tick_count();
@@ -1772,12 +1746,14 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
     else input = desktop->foreground_input;
 
     win = find_hardware_message_window( desktop, input, msg, &msg_code, &thread );
-    if (!win || !thread)
+    flags = thread ? get_rawinput_device_flags( thread->process, msg ) : 0;
+    if (!win || !thread || (flags & RIDEV_NOLEGACY))
     {
-        if (input) update_input_key_state( input->desktop, input->keystate, msg->msg, msg->wparam );
+        if (input && !(flags & RIDEV_NOLEGACY)) update_input_key_state( input->desktop, input->keystate, msg->msg, msg->wparam );
         free_message( msg );
         return;
     }
+
     input = thread->queue->input;
 
     if (win != msg->win) always_queue = 1;
@@ -1800,7 +1776,7 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
     struct message *msg;
     timeout_t timeout = 2000 * -10000;  /* FIXME: load from registry */
 
-    if (!(hook_thread = get_first_global_hook( id ))) return 0;
+    if (!(hook_thread = get_first_global_hook( desktop, id ))) return 0;
     if (!(queue = hook_thread->queue)) return 0;
     if (is_queue_hung( queue )) return 0;
 
@@ -2036,7 +2012,6 @@ static void dispatch_rawinput_message( struct desktop *desktop, struct rawinput_
 static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const hw_input_t *input,
                                 unsigned int origin, struct msg_queue *sender )
 {
-    const struct rawinput_device *device;
     struct hardware_msg_data *msg_data;
     struct rawinput_message raw_msg;
     struct message *msg;
@@ -2105,13 +2080,6 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         release_object( foreground );
     }
 
-    if ((device = current->process->rawinput_mouse) && (device->flags & RIDEV_NOLEGACY))
-    {
-        if (flags & MOUSEEVENTF_MOVE) update_desktop_cursor_pos( desktop, win, x, y );
-        update_desktop_mouse_state( desktop, flags, wparam );
-        return 0;
-    }
-
     for (i = 0; i < ARRAY_SIZE( messages ); i++)
     {
         if (!messages[i]) continue;
@@ -2141,12 +2109,30 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
     return wait;
 }
 
+static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const hw_input_t *input,
+                                   unsigned int origin, struct msg_queue *sender, int repeat );
+
+static void key_repeat_timeout( void *private )
+{
+    struct desktop *desktop = private;
+
+    desktop->key_repeat.timeout = NULL;
+    queue_keyboard_message( desktop, desktop->key_repeat.win, &desktop->key_repeat.input, IMO_HARDWARE, NULL, 1 );
+}
+
+static void stop_key_repeat( struct desktop *desktop )
+{
+    if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
+    desktop->key_repeat.timeout = NULL;
+    desktop->key_repeat.win = 0;
+    memset( &desktop->key_repeat.input, 0, sizeof(desktop->key_repeat.input) );
+}
+
 /* queue a hardware message for a keyboard event */
 static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const hw_input_t *input,
-                                   unsigned int origin, struct msg_queue *sender )
+                                   unsigned int origin, struct msg_queue *sender, int repeat )
 {
     struct hw_msg_source source = { IMDT_KEYBOARD, origin };
-    const struct rawinput_device *device;
     struct hardware_msg_data *msg_data;
     struct message *msg;
     struct thread *foreground;
@@ -2247,6 +2233,26 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
        }
     }
 
+    if (origin == IMO_HARDWARE)
+    {
+        /* if the repeat key is released, stop auto-repeating */
+        if (((input->kbd.flags & KEYEVENTF_KEYUP) &&
+             (input->kbd.scan == desktop->key_repeat.input.kbd.scan)))
+        {
+            stop_key_repeat( desktop );
+        }
+        /* if a key is down, start or continue auto-repeating */
+        if (!(input->kbd.flags & KEYEVENTF_KEYUP) && desktop->key_repeat.enable)
+        {
+            timeout_t timeout = repeat ? desktop->key_repeat.period : desktop->key_repeat.delay;
+            desktop->key_repeat.input = *input;
+            desktop->key_repeat.input.kbd.time = 0;
+            desktop->key_repeat.win = win;
+            if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
+            desktop->key_repeat.timeout = add_timeout_user( timeout, key_repeat_timeout, desktop );
+        }
+    }
+
     if (!unicode && (foreground = get_foreground_thread( desktop, win )))
     {
         struct rawinput_message raw_msg = {0};
@@ -2260,12 +2266,6 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
 
         dispatch_rawinput_message( desktop, &raw_msg );
         release_object( foreground );
-    }
-
-    if ((device = current->process->rawinput_kbd) && (device->flags & RIDEV_NOLEGACY))
-    {
-        update_input_key_state( desktop, desktop->keystate, message_code, vkey );
-        return 0;
     }
 
     if (!(msg = alloc_hardware_message( input->kbd.info, source, time, 0 ))) return 0;
@@ -2887,8 +2887,20 @@ DECL_HANDLER(set_queue_mask)
         if (is_signaled( queue ))
         {
             /* if skip wait is set, do what would have been done in the subsequent wait */
-            if (req->skip_wait) queue->wake_mask = queue->changed_mask = 0;
-            else wake_up( &queue->obj, 0 );
+            if (req->skip_wait)
+            {
+                queue->wake_mask = queue->changed_mask = 0;
+                fast_reset_event( queue->fast_sync );
+            }
+            else
+            {
+                wake_up( &queue->obj, 0 );
+                fast_set_event( queue->fast_sync );
+            }
+        }
+        else
+        {
+            fast_reset_event( queue->fast_sync );
         }
     }
 }
@@ -2903,12 +2915,8 @@ DECL_HANDLER(get_queue_status)
         reply->wake_bits    = queue->wake_bits;
         reply->changed_bits = queue->changed_bits;
         queue->changed_bits &= ~req->clear_bits;
-
-        if (do_fsync() && !is_signaled( queue ))
-            fsync_clear( &queue->obj );
-
-        if (do_esync() && !is_signaled( queue ))
-            esync_clear( queue->esync_fd );
+        if (!is_signaled( queue ))
+            fast_reset_event( queue->fast_sync );
     }
     else reply->wake_bits = reply->changed_bits = 0;
 }
@@ -3020,7 +3028,7 @@ DECL_HANDLER(send_hardware_message)
         wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
         break;
     case INPUT_KEYBOARD:
-        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender );
+        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
         break;
     case INPUT_HARDWARE:
         queue_custom_hardware_message( desktop, req->win, origin, &req->input );
@@ -3098,6 +3106,9 @@ DECL_HANDLER(get_message)
     if (filter & QS_INPUT) queue->changed_bits &= ~QS_INPUT;
     if (filter & QS_PAINT) queue->changed_bits &= ~QS_PAINT;
 
+    if (!is_signaled( queue ))
+        fast_reset_event( queue->fast_sync );
+
     /* then check for posted messages */
     if ((filter & QS_POSTMESSAGE) &&
         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
@@ -3151,6 +3162,7 @@ DECL_HANDLER(get_message)
     if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
     queue->wake_mask = req->wake_mask;
     queue->changed_mask = req->changed_mask;
+    fast_reset_event( queue->fast_sync );
     set_error( STATUS_PENDING );  /* FIXME */
 }
 
@@ -3895,32 +3907,74 @@ DECL_HANDLER(update_rawinput_devices)
     }
 }
 
-DECL_HANDLER(esync_msgwait)
+DECL_HANDLER(set_keyboard_repeat)
 {
-    struct msg_queue *queue = get_current_queue();
+    struct desktop *desktop;
 
-    if (!queue) return;
-    queue->esync_in_msgwait = req->in_msgwait;
+    if (!(desktop = get_thread_desktop( current, 0 ))) return;
 
-    if (current->process->idle_event && !(queue->wake_mask & QS_SMRESULT))
-        set_event( current->process->idle_event );
+    /* report previous values */
+    reply->enable = desktop->key_repeat.enable;
 
-    /* and start/stop waiting on the driver */
-    if (queue->fd)
-        set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
+    /* ignore negative values to allow partial updates */
+    if (req->enable >= 0) desktop->key_repeat.enable = req->enable;
+    if (req->delay >= 0) desktop->key_repeat.delay = -req->delay * 10000;
+    if (req->period >= 0) desktop->key_repeat.period = -req->period * 10000;
+
+    if (!desktop->key_repeat.enable) stop_key_repeat( desktop );
+
+    release_object( desktop );
 }
 
-DECL_HANDLER(fsync_msgwait)
+DECL_HANDLER(fast_select_queue)
 {
-    struct msg_queue *queue = get_current_queue();
+    struct msg_queue *queue;
 
-    if (!queue) return;
-    queue->fsync_in_msgwait = req->in_msgwait;
+    if (!(queue = (struct msg_queue *)get_handle_obj( current->process, req->handle,
+                                                      SYNCHRONIZE, &msg_queue_ops )))
+        return;
 
-    if (current->process->idle_event && !(queue->wake_mask & QS_SMRESULT))
-        set_event( current->process->idle_event );
+    /* a thread can only wait on its own queue */
+    if (current->queue != queue || queue->in_fast_wait)
+    {
+        set_error( STATUS_ACCESS_DENIED );
+    }
+    else
+    {
+        if (current->process->idle_event && !(queue->wake_mask & QS_SMRESULT))
+            set_event( current->process->idle_event );
 
-    /* and start/stop waiting on the driver */
-    if (queue->fd)
-        set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
+        if (queue->fd)
+            set_fd_events( queue->fd, POLLIN );
+
+        queue->in_fast_wait = 1;
+    }
+
+    release_object( queue );
+}
+
+DECL_HANDLER(fast_unselect_queue)
+{
+    struct msg_queue *queue;
+
+    if (!(queue = (struct msg_queue *)get_handle_obj( current->process, req->handle,
+                                                      SYNCHRONIZE, &msg_queue_ops )))
+        return;
+
+    if (current->queue != queue || !queue->in_fast_wait)
+    {
+        set_error( STATUS_ACCESS_DENIED );
+    }
+    else
+    {
+        if (queue->fd)
+            set_fd_events( queue->fd, 0 );
+
+        if (req->signaled)
+            msg_queue_satisfied( &queue->obj, NULL );
+
+        queue->in_fast_wait = 0;
+    }
+
+    release_object( queue );
 }

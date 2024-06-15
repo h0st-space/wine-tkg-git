@@ -1,21 +1,19 @@
-# Last wine-tkg-fsync-git configuration - Fri Jun  7 10:39:29 AM CEST 2024 :
+# Last wine-tkg-git configuration - Sat Jun 15 05:55:46 PM CEST 2024 :
 
 Local cfg files used
 
-Wine (plain) version: 9.10.r126.g9f6e44fd9ca
+Wine (plain) version: 9.11.r0.g63e25f9edaf
 
-Using esync patchset (version ce79346)
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
 
 Done applying backports hotfixes (if any) - list available in prepare.log
 Done applying reverting hotfixes (if any) - list available in prepare.log
 
-esync-unix-mainline.patch -- ( Using Esync (unix, mainline) patchset )
-fsync-unix-mainline.patch -- ( Applied fsync patches (unix, mainline) )
-fsync_futex_waitv.patch -- ( Applied patches for fsync to support futex_waitv )
 
+childwindow-proton-mainline.patch -- ( Applied child window for vk patch (mainline) )
 LAA-unix.patch -- ( Applied large address aware override support (legacy) )
 
+ntsync5-mainline.patch -- ( Using ntsync patchset )
 msvcrt_nativebuiltin_mainline.patch -- ( Enforce msvcrt Dlls to native then builtin (from Proton) )
 josh-flat-theme.patch -- ( Add Josh's better-theme )
 proton-win10-default.patch -- ( Enforce win10 as default wine version )
