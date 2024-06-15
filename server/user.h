@@ -64,6 +64,16 @@ struct global_cursor
     user_handle_t        win;              /* window that contains the cursor */
 };
 
+struct key_repeat
+{
+    int                  enable;           /* enable auto-repeat */
+    timeout_t            delay;            /* auto-repeat delay */
+    timeout_t            period;           /* auto-repeat period */
+    hw_input_t           input;            /* the input to repeat */
+    user_handle_t        win;              /* target window for input event */
+    struct timeout_user *timeout;          /* timeout for repeat */
+};
+
 struct desktop
 {
     struct object        obj;              /* object header */
@@ -82,6 +92,7 @@ struct desktop
     unsigned int         users;            /* processes and threads using this desktop */
     struct global_cursor cursor;           /* global cursor information */
     unsigned char        keystate[256];    /* asynchronous key state */
+    struct key_repeat    key_repeat;       /* key auto-repeat */
 };
 
 /* user handles functions */
@@ -103,7 +114,7 @@ extern void cleanup_clipboard_thread( struct thread *thread );
 
 extern void remove_thread_hooks( struct thread *thread );
 extern unsigned int get_active_hooks(void);
-extern struct thread *get_first_global_hook( int id );
+extern struct thread *get_first_global_hook( struct desktop *desktop, int id );
 
 /* queue functions */
 

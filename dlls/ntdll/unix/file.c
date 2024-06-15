@@ -496,13 +496,19 @@ static inline unsigned int dir_info_size( FILE_INFORMATION_CLASS class, unsigned
     }
 }
 
+static BOOL is_wildcard( WCHAR c )
+{
+    return c == '*' || c == '?' || c == '>' || c == '<' || c == '\"';
+}
+
 static inline BOOL has_wildcard( const UNICODE_STRING *mask )
 {
     int i;
 
     if (!mask) return TRUE;
     for (i = 0; i < mask->Length / sizeof(WCHAR); i++)
-        if (mask->Buffer[i] == '*' || mask->Buffer[i] == '?') return TRUE;
+        if (is_wildcard( mask->Buffer[i] )) return TRUE;
+
     return FALSE;
 }
 
@@ -1559,13 +1565,17 @@ static ULONG hash_short_file_name( const WCHAR *name, int length, LPWSTR buffer 
     }
 
     /* Find last dot for start of the extension */
-    for (p = name + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
+    p = name;
+    while (*p == '.') ++p;
+    for (p = p + 1, ext = NULL; p < end - 1; p++) if (*p == '.') ext = p;
 
     /* Copy first 4 chars, replacing invalid chars with '_' */
-    for (i = 4, p = name, dst = buffer; i > 0; i--, p++)
+    for (i = 4, p = name, dst = buffer; i > 0; p++)
     {
         if (p == end || p == ext) break;
+        if (*p == '.') continue;
         *dst++ = is_invalid_dos_char(*p) ? '_' : *p;
+        i--;
     }
     /* Pad to 5 chars with '~' */
     while (i-- >= 0) *dst++ = '~';
@@ -1587,29 +1597,14 @@ static ULONG hash_short_file_name( const WCHAR *name, int length, LPWSTR buffer 
 
 
 /***********************************************************************
- *           match_filename
+ *           match_filename_part
  *
- * Check a long file name against a mask.
+ * Recursive helper for match_filename().
  *
- * Tests (done in W95 DOS shell - case insensitive):
- * *.txt			test1.test.txt				*
- * *st1*			test1.txt				*
- * *.t??????.t*			test1.ta.tornado.txt			*
- * *tornado*			test1.ta.tornado.txt			*
- * t*t				test1.ta.tornado.txt			*
- * ?est*			test1.txt				*
- * ?est???			test1.txt				-
- * *test1.txt*			test1.txt				*
- * h?l?o*t.dat			hellothisisatest.dat			*
  */
-static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRING *mask_str )
+static BOOLEAN match_filename_part( const WCHAR *name, const WCHAR *name_end, const WCHAR *mask, const WCHAR *mask_end )
 {
-    BOOL mismatch;
-    const WCHAR *mask = mask_str->Buffer;
-    const WCHAR *name_end = name + length;
-    const WCHAR *mask_end = mask + mask_str->Length / sizeof(WCHAR);
-    const WCHAR *lastjoker = NULL;
-    const WCHAR *next_to_retry = NULL;
+    WCHAR c;
 
     while (name < name_end && mask < mask_end)
     {
@@ -1619,53 +1614,98 @@ static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRI
             mask++;
             while (mask < mask_end && *mask == '*') mask++;  /* Skip consecutive '*' */
             if (mask == mask_end) return TRUE; /* end of mask is all '*', so match */
-            lastjoker = mask;
 
-            /* skip to the next match after the joker(s) */
-            if (is_case_sensitive)
-                while (name < name_end && (*name != *mask)) name++;
-            else
-                while (name < name_end && (towupper(*name) != towupper(*mask))) name++;
-            next_to_retry = name;
-            break;
-        case '?':
-        case '>':
-            mask++;
-            name++;
-            break;
-        default:
-            if (is_case_sensitive) mismatch = (*mask != *name);
-            else mismatch = (towupper(*mask) != towupper(*name));
-
-            if (!mismatch)
+            while (name < name_end)
             {
-                mask++;
-                name++;
-                if (mask == mask_end)
+                c = *mask == '"' ? '.' : *mask;
+                if (!is_wildcard(c))
                 {
-                    if (name == name_end) return TRUE;
-                    if (lastjoker) mask = lastjoker;
+                    if (is_case_sensitive)
+                        while (name < name_end && (*name != c)) name++;
+                    else
+                        while (name < name_end && (towupper(*name) != towupper(c))) name++;
                 }
+                if (match_filename_part( name, name_end, mask, mask_end )) return TRUE;
+                ++name;
             }
-            else /* mismatch ! */
-            {
-                if (lastjoker) /* we had an '*', so we can try unlimitedly */
-                {
-                    mask = lastjoker;
+            break;
+        case '<':
+        {
+            const WCHAR *next_dot;
+            BOOL had_dot = FALSE;
 
-                    /* this scan sequence was a mismatch, so restart
-                     * 1 char after the first char we checked last time */
-                    next_to_retry++;
-                    name = next_to_retry;
+            ++mask;
+            while (name < name_end)
+            {
+                next_dot = name;
+                while (next_dot < name_end && *next_dot != '.') ++next_dot;
+                if (next_dot == name_end && had_dot) break;
+                if (next_dot < name_end)
+                {
+                    had_dot = TRUE;
+                    ++next_dot;
                 }
-                else return FALSE; /* bad luck */
+                if (mask < mask_end)
+                {
+                    while (name < next_dot)
+                    {
+                        c = *mask == '"' ? '.' : *mask;
+                        if (!is_wildcard(c))
+                        {
+                            if (is_case_sensitive)
+                                while (name < next_dot && (*name != c)) name++;
+                            else
+                                while (name < next_dot && (towupper(*name) != towupper(c))) name++;
+                        }
+                        if (match_filename_part( name, name_end, mask, mask_end )) return TRUE;
+                        ++name;
+                    }
+                }
+                name = next_dot;
             }
             break;
         }
+        case '?':
+            mask++;
+            name++;
+            break;
+        case '>':
+            mask++;
+            if (*name == '.')
+            {
+                while (mask < mask_end && *mask == '>') mask++;
+                if (mask == mask_end) name++;
+            }
+            else name++;
+            break;
+        default:
+            c = *mask == '"' ? '.' : *mask;
+            if (is_case_sensitive && c != *name) return FALSE;
+            if (!is_case_sensitive && towupper(c) != towupper(*name)) return FALSE;
+            mask++;
+            name++;
+            break;
+        }
     }
-    while (mask < mask_end && ((*mask == '.') || (*mask == '*')))
-        mask++;  /* Ignore trailing '.' or '*' in mask */
+    while (mask < mask_end && (*mask == '*' || *mask == '<' || *mask == '"' || *mask == '>'))
+        mask++;
     return (name == name_end && mask == mask_end);
+}
+
+
+/***********************************************************************
+ *           match_filename
+ *
+ * Check a file name against a mask.
+ *
+ */
+static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRING *mask_str )
+{
+    /* Special handling for parent directory. */
+    if (length == 2 && name[0] == '.' && name[1] == '.') --length;
+
+    return match_filename_part( name, name + length, mask_str->Buffer,
+                                mask_str->Buffer + mask_str->Length / sizeof(WCHAR));
 }
 
 

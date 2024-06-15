@@ -2102,9 +2102,10 @@ UINT get_monitor_dpi( HMONITOR monitor )
     return system_dpi;
 }
 
-static RECT get_monitor_rect( struct monitor *monitor, UINT dpi )
+static RECT get_monitor_rect( struct monitor *monitor, BOOL work, UINT dpi )
 {
-    return map_dpi_rect( monitor->rc_monitor, get_monitor_dpi( monitor->handle ), dpi );
+    RECT rect = work ? monitor->rc_work : monitor->rc_monitor;
+    return map_dpi_rect( rect, get_monitor_dpi( monitor->handle ), dpi );
 }
 
 /**********************************************************************
@@ -2285,13 +2286,14 @@ RECT get_virtual_screen_rect( UINT dpi )
 
     LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
     {
+        RECT monitor_rect;
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
-        union_rect( &rect, &rect, &monitor->rc_monitor );
+        monitor_rect = get_monitor_rect( monitor, FALSE, dpi );
+        union_rect( &rect, &rect, &monitor_rect );
     }
 
     unlock_display_devices();
 
-    if (dpi) rect = map_dpi_rect( rect, system_dpi, dpi );
     return rect;
 }
 
@@ -2308,7 +2310,7 @@ static BOOL is_window_rect_full_screen( const RECT *rect, UINT dpi )
 
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
 
-        monrect = get_monitor_rect( monitor, dpi );
+        monrect = get_monitor_rect( monitor, FALSE, dpi );
         if (rect->left <= monrect.left && rect->right >= monrect.right &&
             rect->top <= monrect.top && rect->bottom >= monrect.bottom)
         {
@@ -2338,7 +2340,7 @@ RECT get_display_rect( const WCHAR *display )
     struct monitor *monitor;
     UNICODE_STRING name;
     RECT rect = {0};
-    UINT index;
+    UINT index, dpi = get_thread_dpi();
 
     RtlInitUnicodeString( &name, display );
     if (!(index = get_display_index( &name ))) return rect;
@@ -2347,12 +2349,12 @@ RECT get_display_rect( const WCHAR *display )
     LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
     {
         if (!monitor->source || monitor->source->id + 1 != index) continue;
-        rect = monitor->rc_monitor;
+        rect = get_monitor_rect( monitor, FALSE, dpi );
         break;
     }
 
     unlock_display_devices();
-    return map_dpi_rect( rect, system_dpi, get_thread_dpi() );
+    return rect;
 }
 
 RECT get_primary_monitor_rect( UINT dpi )
@@ -2365,12 +2367,12 @@ RECT get_primary_monitor_rect( UINT dpi )
     LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
     {
         if (!is_monitor_primary( monitor )) continue;
-        rect = monitor->rc_monitor;
+        rect = get_monitor_rect( monitor, FALSE, dpi );
         break;
     }
 
     unlock_display_devices();
-    return map_dpi_rect( rect, system_dpi, dpi );
+    return rect;
 }
 
 /**********************************************************************
@@ -3505,7 +3507,7 @@ static BOOL should_enumerate_monitor( struct monitor *monitor, const POINT *orig
     if (!is_monitor_active( monitor )) return FALSE;
     if (monitor->is_clone) return FALSE;
 
-    *rect = get_monitor_rect( monitor, get_thread_dpi() );
+    *rect = get_monitor_rect( monitor, FALSE, get_thread_dpi() );
     OffsetRect( rect, -origin->x, -origin->y );
     return intersect_rect( rect, rect, limit );
 }
@@ -3592,10 +3594,9 @@ BOOL WINAPI NtUserEnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc
     return ret;
 }
 
-BOOL get_monitor_info( HMONITOR handle, MONITORINFO *info )
+BOOL get_monitor_info( HMONITOR handle, MONITORINFO *info, UINT dpi )
 {
     struct monitor *monitor;
-    UINT dpi_from, dpi_to;
 
     if (info->cbSize != sizeof(MONITORINFOEXW) && info->cbSize != sizeof(MONITORINFO)) return FALSE;
 
@@ -3606,9 +3607,8 @@ BOOL get_monitor_info( HMONITOR handle, MONITORINFO *info )
         if (monitor->handle != handle) continue;
         if (!is_monitor_active( monitor )) continue;
 
-        /* FIXME: map dpi */
-        info->rcMonitor = monitor->rc_monitor;
-        info->rcWork = monitor->rc_work;
+        info->rcMonitor = get_monitor_rect( monitor, FALSE, dpi );
+        info->rcWork = get_monitor_rect( monitor, TRUE, dpi );
         info->dwFlags = is_monitor_primary( monitor ) ? MONITORINFOF_PRIMARY : 0;
         if (info->cbSize >= sizeof(MONITORINFOEXW))
         {
@@ -3619,12 +3619,6 @@ BOOL get_monitor_info( HMONITOR handle, MONITORINFO *info )
         }
         unlock_display_devices();
 
-        if ((dpi_to = get_thread_dpi()))
-        {
-            dpi_from = get_monitor_dpi( handle );
-            info->rcMonitor = map_dpi_rect( info->rcMonitor, dpi_from, dpi_to );
-            info->rcWork = map_dpi_rect( info->rcWork, dpi_from, dpi_to );
-        }
         TRACE( "flags %04x, monitor %s, work %s\n", (int)info->dwFlags,
                wine_dbgstr_rect(&info->rcMonitor), wine_dbgstr_rect(&info->rcWork));
         return TRUE;
@@ -3658,7 +3652,7 @@ HMONITOR monitor_from_rect( const RECT *rect, UINT flags, UINT dpi )
 
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
 
-        monitor_rect = get_monitor_rect( monitor, system_dpi );
+        monitor_rect = get_monitor_rect( monitor, FALSE, system_dpi );
         if (intersect_rect( &intersect, &monitor_rect, &r ))
         {
             /* check for larger intersecting area */
@@ -3797,6 +3791,25 @@ BOOL WINAPI NtUserPerMonitorDPIPhysicalToLogicalPoint( HWND hwnd, POINT *pt )
         ret = TRUE;
     }
     return ret;
+}
+
+/* Set server auto-repeat properties. delay and speed are expressed in terms of
+ * SPI_KEYBOARDDELAY and SPI_KEYBOARDSPEED values. Returns whether auto-repeat
+ * was enabled before this request. */
+static BOOL set_server_keyboard_repeat( int enable, int delay, int speed )
+{
+    BOOL enabled = FALSE;
+
+    SERVER_START_REQ( set_keyboard_repeat )
+    {
+        req->enable = enable >= 0 ? (enable > 0) : -1;
+        req->delay = delay >= 0 ? (delay + 1) * 250 : -1;
+        req->period = speed >= 0 ? 400 / (speed + 1) : -1;
+        if (!wine_server_call( req )) enabled = reply->enable;
+    }
+    SERVER_END_REQ;
+
+    return enabled;
 }
 
 /* retrieve the cached base keys for a given entry */
@@ -5029,7 +5042,8 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
         break;
     case SPI_SETKEYBOARDSPEED:
         if (val > 31) val = 31;
-        ret = set_entry( &entry_KEYBOARDSPEED, val, ptr, winini );
+        if ((ret = set_entry( &entry_KEYBOARDSPEED, val, ptr, winini )))
+            set_server_keyboard_repeat( -1,  -1, val );
         break;
 
     WINE_SPI_WARN(SPI_LANGDRIVER); /* not implemented in Windows */
@@ -5073,7 +5087,8 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
         ret = get_entry( &entry_KEYBOARDDELAY, val, ptr );
         break;
     case SPI_SETKEYBOARDDELAY:
-        ret = set_entry( &entry_KEYBOARDDELAY, val, ptr, winini );
+        if ((ret = set_entry( &entry_KEYBOARDDELAY, val, ptr, winini )))
+            set_server_keyboard_repeat( -1,  val, -1 );
         break;
     case SPI_ICONVERTICALSPACING:
         if (ptr != NULL)
@@ -5244,6 +5259,8 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
     }
     case SPI_GETWORKAREA:
     {
+        UINT dpi = get_thread_dpi();
+
         if (!ptr) return FALSE;
 
         spi_idx = SPI_SETWORKAREA_IDX;
@@ -5256,14 +5273,14 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
             LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
             {
                 if (!is_monitor_primary( monitor )) continue;
-                work_area = monitor->rc_work;
+                work_area = get_monitor_rect( monitor, TRUE, dpi );
                 break;
             }
 
             unlock_display_devices();
             spi_loaded[spi_idx] = TRUE;
         }
-        *(RECT *)ptr = map_dpi_rect( work_area, system_dpi, get_thread_dpi() );
+        *(RECT *)ptr = work_area;
         ret = TRUE;
         TRACE("work area %s\n", wine_dbgstr_rect( &work_area ));
         break;
@@ -6327,6 +6344,15 @@ static void thread_detach(void)
     exiting_thread_id = 0;
 }
 
+static BOOL set_keyboard_auto_repeat( BOOL enable )
+{
+    UINT delay, speed;
+
+    get_entry( &entry_KEYBOARDDELAY, 0, &delay );
+    get_entry( &entry_KEYBOARDSPEED, 0, &speed );
+    return set_server_keyboard_repeat( enable, delay, speed );
+}
+
 /***********************************************************************
  *	     NtUserCallNoParam    (win32u.@)
  */
@@ -6407,7 +6433,7 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
         return enum_clipboard_formats( arg );
 
     case NtUserCallOneParam_GetClipCursor:
-        return get_clip_cursor( (RECT *)arg );
+        return get_clip_cursor( (RECT *)arg, get_thread_dpi() );
 
     case NtUserCallOneParam_GetCursorPos:
         return get_cursor_pos( (POINT *)arg );
@@ -6487,7 +6513,7 @@ ULONG_PTR WINAPI NtUserCallTwoParam( ULONG_PTR arg1, ULONG_PTR arg2, ULONG code 
         return get_menu_info( UlongToHandle(arg1), (MENUINFO *)arg2 );
 
     case NtUserCallTwoParam_GetMonitorInfo:
-        return get_monitor_info( UlongToHandle(arg1), (MONITORINFO *)arg2 );
+        return get_monitor_info( UlongToHandle(arg1), (MONITORINFO *)arg2, get_thread_dpi() );
 
     case NtUserCallTwoParam_GetSystemMetricsForDpi:
         return get_system_metrics_for_dpi( arg1, arg2 );

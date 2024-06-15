@@ -2518,7 +2518,7 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     if (!reset && clipping_cursor && thread_info->clipping_cursor) return FALSE;  /* already clipping */
 
     if (!(monitor = NtUserMonitorFromWindow( hwnd, MONITOR_DEFAULTTONEAREST ))) return FALSE;
-    if (!NtUserGetMonitorInfo( monitor, &monitor_info )) return FALSE;
+    if (!get_monitor_info( monitor, &monitor_info, 0 )) return FALSE;
     if (!grab_fullscreen)
     {
         RECT virtual_rect = NtUserGetVirtualScreenRect();
@@ -2551,9 +2551,8 @@ BOOL WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_P
     return FALSE;
 }
 
-BOOL get_clip_cursor( RECT *rect )
+BOOL get_clip_cursor( RECT *rect, UINT dpi )
 {
-    UINT dpi;
     BOOL ret;
 
     if (!rect) return FALSE;
@@ -2566,7 +2565,7 @@ BOOL get_clip_cursor( RECT *rect )
     }
     SERVER_END_REQ;
 
-    if (ret && (dpi = get_thread_dpi()))
+    if (ret)
     {
         HMONITOR monitor = monitor_from_rect( rect, MONITOR_DEFAULTTOPRIMARY, 0 );
         *rect = map_dpi_rect( *rect, get_monitor_dpi( monitor ), dpi );
@@ -2594,7 +2593,7 @@ BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset )
     if (!grab_pointer) return TRUE;
 
     /* we are clipping if the clip rectangle is smaller than the screen */
-    get_clip_cursor( &rect );
+    get_clip_cursor( &rect, 0 );
     intersect_rect( &rect, &rect, &virtual_rect );
     if (EqualRect( &rect, &virtual_rect )) empty = TRUE;
     if (empty && !(flags & SET_CURSOR_FSCLIP))

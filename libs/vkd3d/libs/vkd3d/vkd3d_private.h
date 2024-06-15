@@ -123,6 +123,7 @@ struct vkd3d_vulkan_info
     bool KHR_image_format_list;
     bool KHR_maintenance2;
     bool KHR_maintenance3;
+    bool KHR_portability_subset;
     bool KHR_push_descriptor;
     bool KHR_sampler_mirror_clamp_to_edge;
     bool KHR_timeline_semaphore;
@@ -145,6 +146,7 @@ struct vkd3d_vulkan_info
 
     bool rasterization_stream;
     bool transform_feedback_queries;
+    bool geometry_shaders;
 
     bool uav_read_without_format;
 
@@ -500,7 +502,7 @@ struct d3d12_resource
 
 static inline struct d3d12_resource *impl_from_ID3D12Resource(ID3D12Resource *iface)
 {
-    return CONTAINING_RECORD((ID3D12Resource2*)iface, struct d3d12_resource, ID3D12Resource2_iface);
+    return CONTAINING_RECORD(iface, struct d3d12_resource, ID3D12Resource2_iface);
 }
 
 static inline struct d3d12_resource *impl_from_ID3D12Resource2(ID3D12Resource2 *iface)
@@ -832,7 +834,7 @@ void d3d12_desc_flush_vk_heap_updates_locked(struct d3d12_descriptor_heap *descr
 
 static inline struct d3d12_descriptor_heap *d3d12_desc_get_descriptor_heap(const struct d3d12_desc *descriptor)
 {
-    return CONTAINING_RECORD( (void*)(descriptor - descriptor->index), struct d3d12_descriptor_heap, descriptors);
+    return CONTAINING_RECORD(descriptor - descriptor->index, struct d3d12_descriptor_heap, descriptors);
 }
 
 static inline unsigned int d3d12_desc_heap_range_size(const struct d3d12_desc *descriptor)

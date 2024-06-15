@@ -55,6 +55,25 @@ static UINT get_win_monitor_dpi(HWND hwnd)
 }
 
 
+/* per-monitor DPI aware NtUserSetWindowPos call */
+static BOOL set_window_pos(HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags)
+{
+    UINT context = NtUserSetThreadDpiAwarenessContext(NTUSER_DPI_PER_MONITOR_AWARE_V2);
+    BOOL ret = NtUserSetWindowPos(hwnd, after, x, y, cx, cy, flags);
+    NtUserSetThreadDpiAwarenessContext(context);
+    return ret;
+}
+
+
+/* per-monitor DPI aware NtUserSetInternalWindowPos call */
+static void set_internal_window_pos(HWND hwnd, UINT cmd, RECT *rect, POINT *pt)
+{
+    UINT context = NtUserSetThreadDpiAwarenessContext(NTUSER_DPI_PER_MONITOR_AWARE_V2);
+    NtUserSetInternalWindowPos(hwnd, cmd, rect, pt);
+    NtUserSetThreadDpiAwarenessContext(context);
+}
+
+
 /***********************************************************************
  *              get_cocoa_window_features
  */
@@ -930,10 +949,8 @@ static void set_focus(HWND hwnd, BOOL raise)
 
     if (!(hwnd = NtUserGetAncestor(hwnd, GA_ROOT))) return;
 
-    if (raise && hwnd == NtUserGetForegroundWindow() && hwnd != NtUserGetDesktopWindow() &&
-        !is_all_the_way_front(hwnd))
-        NtUserSetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
-                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    if (raise && hwnd == NtUserGetForegroundWindow() && hwnd != NtUserGetDesktopWindow() && !is_all_the_way_front(hwnd))
+        set_window_pos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 
     if (!(data = get_win_data(hwnd))) return;
 
@@ -1480,8 +1497,7 @@ static LRESULT move_window(HWND hwnd, WPARAM wparam)
                 capturePoint = pt;
 
                 send_message(hwnd, WM_MOVING, 0, (LPARAM)&movedRect);
-                NtUserSetWindowPos(hwnd, 0, movedRect.left, movedRect.top, 0, 0,
-                                   SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+                set_window_pos(hwnd, 0, movedRect.left, movedRect.top, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
             }
         }
     }
@@ -1494,8 +1510,7 @@ static LRESULT move_window(HWND hwnd, WPARAM wparam)
     /* if the move is canceled, restore the previous position */
     if (moved && msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE)
     {
-        NtUserSetWindowPos(hwnd, 0, origRect.left, origRect.top, 0, 0,
-                           SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+        set_window_pos(hwnd, 0, origRect.left, origRect.top, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
     }
 
     return 0;
@@ -1910,10 +1925,6 @@ BOOL macdrv_CreateLayeredWindow(HWND hwnd, const RECT *window_rect, COLORREF col
 
     if ((*window_surface = surface)) window_surface_add_ref(surface);
 
-    /* Since layered attributes are now set, can now show the window */
-    if (data->cocoa_window && !data->on_screen && NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_VISIBLE)
-        show_window(data);
-
     release_win_data(data);
 
     return TRUE;
@@ -1929,6 +1940,10 @@ void macdrv_UpdateLayeredWindow(HWND hwnd, const RECT *window_rect, COLORREF col
 
     if ((data = get_win_data(hwnd)))
     {
+        /* Since layered attributes are now set, can now show the window */
+        if (data->cocoa_window && !data->on_screen && NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_VISIBLE)
+            show_window(data);
+
         /* The ULW flags are a superset of the LWA flags. */
         sync_window_opacity(data, color_key, 255, TRUE, flags);
         release_win_data(data);
@@ -1985,29 +2000,46 @@ static inline RECT get_surface_rect(const RECT *visible_rect)
 /***********************************************************************
  *              WindowPosChanging   (MACDRV.@)
  */
-BOOL macdrv_WindowPosChanging(HWND hwnd, HWND insert_after, UINT swp_flags,
-                              const RECT *window_rect, const RECT *client_rect,
-                              RECT *visible_rect, struct window_surface **surface)
+BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, const RECT *window_rect, const RECT *client_rect, RECT *visible_rect)
 {
     struct macdrv_win_data *data = get_win_data(hwnd);
     DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
-    RECT surface_rect;
+    BOOL ret = FALSE;
 
-    TRACE("%p after %p swp %04x window %s client %s visible %s surface %p\n", hwnd, insert_after,
+    TRACE("%p swp %04x window %s client %s visible %s\n", hwnd,
           swp_flags, wine_dbgstr_rect(window_rect), wine_dbgstr_rect(client_rect),
-          wine_dbgstr_rect(visible_rect), surface);
+          wine_dbgstr_rect(visible_rect));
 
-    if (!data && !(data = macdrv_create_win_data(hwnd, window_rect, client_rect))) return TRUE;
+    if (!data && !(data = macdrv_create_win_data(hwnd, window_rect, client_rect))) return FALSE; /* use default surface */
 
-    *visible_rect = *window_rect;
     macdrv_window_to_mac_rect(data, style, visible_rect, window_rect, client_rect);
     TRACE("visible_rect %s -> %s\n", wine_dbgstr_rect(window_rect),
           wine_dbgstr_rect(visible_rect));
 
-    /* create the window surface if necessary */
-    if (!data->cocoa_window) goto done;
-    if (swp_flags & SWP_HIDEWINDOW) goto done;
-    if (data->ulw_layered) goto done;
+    if (!data->cocoa_window) goto done; /* use default surface */
+    if (swp_flags & SWP_HIDEWINDOW) goto done; /* use default surface */
+    if (data->ulw_layered) goto done; /* use default surface */
+
+    ret = TRUE;
+
+done:
+    release_win_data(data);
+    return ret;
+}
+
+
+/***********************************************************************
+ *              CreateWindowSurface   (MACDRV.@)
+ */
+BOOL macdrv_CreateWindowSurface(HWND hwnd, UINT swp_flags, const RECT *visible_rect, struct window_surface **surface)
+{
+    struct macdrv_win_data *data;
+    DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+    RECT surface_rect;
+
+    TRACE("hwnd %p, swp_flags %08x, visible %s, surface %p\n", hwnd, swp_flags, wine_dbgstr_rect(visible_rect), surface);
+
+    if (!(data = get_win_data(hwnd))) return TRUE; /* use default surface */
 
     if (*surface) window_surface_release(*surface);
     *surface = NULL;
@@ -2230,7 +2262,7 @@ void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event)
 
     rect = rect_from_cgrect(event->window_frame_changed.frame);
     macdrv_mac_to_window_rect(data, &rect);
-    NtUserMapWindowPoints(0, parent, (POINT *)&rect, 2);
+    NtUserMapWindowPoints(0, parent, (POINT *)&rect, 2, 0 /* per-monitor DPI */);
 
     width = rect.right - rect.left;
     height = rect.bottom - rect.top;
@@ -2259,7 +2291,7 @@ void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event)
         int send_sizemove = !event->window_frame_changed.in_resize && !being_dragged && !event->window_frame_changed.skip_size_move_loop;
         if (send_sizemove)
             send_message(hwnd, WM_ENTERSIZEMOVE, 0, 0);
-        NtUserSetWindowPos(hwnd, 0, rect.left, rect.top, width, height, flags);
+        set_window_pos(hwnd, 0, rect.left, rect.top, width, height, flags);
         if (send_sizemove)
             send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
     }
@@ -2429,7 +2461,7 @@ done:
 void macdrv_window_brought_forward(HWND hwnd)
 {
     TRACE("win %p\n", hwnd);
-    NtUserSetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    set_window_pos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 
@@ -2465,11 +2497,11 @@ void macdrv_window_restore_requested(HWND hwnd, const macdrv_event *event)
 
             rect = rect_from_cgrect(event->window_restore_requested.frame);
             macdrv_mac_to_window_rect(data, &rect);
-            NtUserMapWindowPoints(0, parent, (POINT *)&rect, 2);
+            NtUserMapWindowPoints(0, parent, (POINT *)&rect, 2, 0 /* per-monitor DPI */);
 
             release_win_data(data);
 
-            NtUserSetInternalWindowPos(hwnd, SW_SHOW, &rect, NULL);
+            set_internal_window_pos(hwnd, SW_SHOW, &rect, NULL);
         }
     }
 
