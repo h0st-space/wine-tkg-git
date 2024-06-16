@@ -86,7 +86,8 @@ struct process
     struct list          rawinput_entry;  /* entry in the rawinput process list */
     struct list          kernel_object;   /* list of kernel object pointers */
     pe_image_info_t      image_info;      /* main exe image info */
-    struct fast_sync    *fast_sync;       /* fast synchronization object */
+    int                  esync_fd;        /* esync file descriptor (signaled on exit) */
+    unsigned int         fsync_idx;
 };
 
 /* process functions */

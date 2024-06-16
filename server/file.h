@@ -22,7 +22,6 @@
 #define __WINE_SERVER_FILE_H
 
 #include <sys/types.h>
-#include <sys/stat.h>
 
 #include "object.h"
 
@@ -86,7 +85,6 @@ extern struct fd *open_fd( struct fd *root, const char *name, struct unicode_str
                            unsigned int sharing, unsigned int options );
 extern struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops,
                                        int unix_fd, struct object *user, unsigned int options );
-extern void set_unix_name_of_fd( struct fd *fd, const struct stat *fd_st );
 extern struct fd *dup_fd_object( struct fd *orig, unsigned int access, unsigned int sharing,
                                  unsigned int options );
 extern struct fd *get_fd_object_for_mapping( struct fd *fd, unsigned int access, unsigned int sharing );
@@ -110,7 +108,8 @@ extern char *dup_fd_name( struct fd *root, const char *name ) __WINE_DEALLOC(fre
 extern void get_nt_name( struct fd *fd, struct unicode_str *name );
 
 extern int default_fd_signaled( struct object *obj, struct wait_queue_entry *entry );
-extern struct fast_sync *default_fd_get_fast_sync( struct object *obj );
+extern int default_fd_get_esync_fd( struct object *obj, enum esync_type *type );
+extern unsigned int default_fd_get_fsync_idx( struct object *obj, enum fsync_type *type );
 extern int default_fd_get_poll_events( struct fd *fd );
 extern void default_poll_event( struct fd *fd, int event );
 extern void fd_cancel_async( struct fd *fd, struct async *async );

@@ -50,6 +50,8 @@
 #include "request.h"
 #include "user.h"
 #include "security.h"
+#include "esync.h"
+#include "fsync.h"
 
 
 /* thread queues */
@@ -96,6 +98,8 @@ static const struct object_ops thread_apc_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     thread_apc_signaled,        /* signaled */
+    NULL,                       /* get_esync_fd */
+    NULL,                       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -108,7 +112,6 @@ static const struct object_ops thread_apc_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
-    no_get_fast_sync,           /* get_fast_sync */
     no_close_handle,            /* close_handle */
     thread_apc_destroy          /* destroy */
 };
@@ -139,6 +142,8 @@ static const struct object_ops context_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     context_signaled,           /* signaled */
+    NULL,                       /* get_esync_fd */
+    NULL,                       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -151,7 +156,6 @@ static const struct object_ops context_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
-    no_get_fast_sync,           /* get_fast_sync */
     no_close_handle,            /* close_handle */
     no_destroy                  /* destroy */
 };
@@ -176,10 +180,11 @@ struct type_descr thread_type =
 
 static void dump_thread( struct object *obj, int verbose );
 static int thread_signaled( struct object *obj, struct wait_queue_entry *entry );
+static int thread_get_esync_fd( struct object *obj, enum esync_type *type );
+static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static unsigned int thread_map_access( struct object *obj, unsigned int access );
 static void thread_poll_event( struct fd *fd, int event );
 static struct list *thread_get_kernel_obj_list( struct object *obj );
-static struct fast_sync *thread_get_fast_sync( struct object *obj );
 static void destroy_thread( struct object *obj );
 
 static const struct object_ops thread_ops =
@@ -190,6 +195,8 @@ static const struct object_ops thread_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     thread_signaled,            /* signaled */
+    thread_get_esync_fd,        /* get_esync_fd */
+    thread_get_fsync_idx,       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -202,7 +209,6 @@ static const struct object_ops thread_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     thread_get_kernel_obj_list, /* get_kernel_obj_list */
-    thread_get_fast_sync,       /* get_fast_sync */
     no_close_handle,            /* close_handle */
     destroy_thread              /* destroy */
 };
@@ -230,6 +236,9 @@ static inline void init_thread_structure( struct thread *thread )
     thread->context         = NULL;
     thread->teb             = 0;
     thread->entry_point     = 0;
+    thread->esync_fd        = -1;
+    thread->esync_apc_fd    = -1;
+    thread->fsync_idx       = 0;
     thread->system_regs     = 0;
     thread->queue           = NULL;
     thread->wait            = NULL;
@@ -250,8 +259,6 @@ static inline void init_thread_structure( struct thread *thread )
     thread->token           = NULL;
     thread->desc            = NULL;
     thread->desc_len        = 0;
-    thread->fast_sync       = NULL;
-    thread->fast_alert_event = NULL;
 
     thread->creation_time = current_time;
     thread->exit_time     = 0;
@@ -378,6 +385,18 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
         }
     }
 
+    if (do_fsync())
+    {
+        thread->fsync_idx = fsync_alloc_shm( 0, 0 );
+        thread->fsync_apc_idx = fsync_alloc_shm( 0, 0 );
+    }
+
+    if (do_esync())
+    {
+        thread->esync_fd = esync_create_fd( 0, 0 );
+        thread->esync_apc_fd = esync_create_fd( 0, 0 );
+    }
+
     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
     add_process_thread( thread->process, thread );
     return thread;
@@ -400,16 +419,6 @@ static struct list *thread_get_kernel_obj_list( struct object *obj )
 {
     struct thread *thread = (struct thread *)obj;
     return &thread->kernel_object;
-}
-
-static struct fast_sync *thread_get_fast_sync( struct object *obj )
-{
-    struct thread *thread = (struct thread *)obj;
-
-    if (!thread->fast_sync)
-        thread->fast_sync = fast_create_event( FAST_SYNC_MANUAL_SERVER, thread->state == TERMINATED );
-    if (thread->fast_sync) grab_object( thread->fast_sync );
-    return thread->fast_sync;
 }
 
 /* cleanup everything that is no longer needed by a dead thread */
@@ -466,8 +475,9 @@ static void destroy_thread( struct object *obj )
     release_object( thread->process );
     if (thread->id) free_ptid( thread->id );
     if (thread->token) release_object( thread->token );
-    if (thread->fast_sync) release_object( thread->fast_sync );
-    if (thread->fast_alert_event) release_object( thread->fast_alert_event );
+
+    if (do_esync())
+        close( thread->esync_fd );
 }
 
 /* dump a thread on stdout for debugging purposes */
@@ -484,6 +494,20 @@ static int thread_signaled( struct object *obj, struct wait_queue_entry *entry )
 {
     struct thread *mythread = (struct thread *)obj;
     return (mythread->state == TERMINATED);
+}
+
+static int thread_get_esync_fd( struct object *obj, enum esync_type *type )
+{
+    struct thread *thread = (struct thread *)obj;
+    *type = ESYNC_MANUAL_SERVER;
+    return thread->esync_fd;
+}
+
+static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *type )
+{
+    struct thread *thread = (struct thread *)obj;
+    *type = FSYNC_MANUAL_SERVER;
+    return thread->fsync_idx;
 }
 
 static unsigned int thread_map_access( struct object *obj, unsigned int access )
@@ -538,6 +562,7 @@ static struct thread_apc *create_apc( struct object *owner, const apc_call_t *ca
         apc->result.type = APC_NONE;
         if (owner) grab_object( owner );
     }
+
     return apc;
 }
 
@@ -1081,6 +1106,12 @@ void wake_up( struct object *obj, int max )
     struct list *ptr;
     int ret;
 
+    if (do_fsync())
+        fsync_wake_up( obj );
+
+    if (do_esync())
+        esync_wake_up( obj );
+
     LIST_FOR_EACH( ptr, &obj->wait_queue )
     {
         struct wait_queue_entry *entry = LIST_ENTRY( ptr, struct wait_queue_entry, entry );
@@ -1168,8 +1199,11 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
     {
         wake_thread( thread );
 
-        if (apc->call.type == APC_USER && thread->fast_alert_event)
-            set_event( thread->fast_alert_event );
+        if (do_fsync() && queue == &thread->user_apc)
+            fsync_wake_futex( thread->fsync_apc_idx );
+
+        if (do_esync() && queue == &thread->user_apc)
+            esync_wake_fd( thread->esync_apc_fd );
     }
 
     return 1;
@@ -1202,8 +1236,6 @@ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_ty
         apc->executed = 1;
         wake_up( &apc->obj, 0 );
         release_object( apc );
-        if (list_empty( &thread->user_apc ) && thread->fast_alert_event)
-            reset_event( thread->fast_alert_event );
         return;
     }
 }
@@ -1218,10 +1250,14 @@ static struct thread_apc *thread_dequeue_apc( struct thread *thread, int system 
     {
         apc = LIST_ENTRY( ptr, struct thread_apc, entry );
         list_remove( ptr );
-
-        if (list_empty( &thread->user_apc ) && thread->fast_alert_event)
-            reset_event( thread->fast_alert_event );
     }
+
+    if (do_fsync() && list_empty( &thread->system_apc ) && list_empty( &thread->user_apc ))
+        fsync_clear_futex( thread->fsync_apc_idx );
+
+    if (do_esync() && list_empty( &thread->system_apc ) && list_empty( &thread->user_apc ))
+        esync_clear( thread->esync_apc_fd );
+
     return apc;
 }
 
@@ -1317,8 +1353,11 @@ void kill_thread( struct thread *thread, int violent_death )
     }
     kill_console_processes( thread, 0 );
     abandon_mutexes( thread );
+    if (do_fsync())
+        fsync_abandon_mutexes( thread );
+    if (do_esync())
+        esync_abandon_mutexes( thread );
     wake_up( &thread->obj, 0 );
-    fast_set_event( thread->fast_sync );
     if (violent_death) send_thread_signal( thread, SIGQUIT );
     cleanup_thread( thread );
     remove_process_thread( thread->process, thread );
@@ -2061,13 +2100,4 @@ DECL_HANDLER(get_next_thread)
     }
     set_error( STATUS_NO_MORE_ENTRIES );
     release_object( process );
-}
-
-DECL_HANDLER(get_fast_alert_event)
-{
-    if (!current->fast_alert_event)
-        current->fast_alert_event = create_event( NULL, NULL, 0, 1, !list_empty( &current->user_apc ), NULL );
-
-    if (current->fast_alert_event)
-        reply->handle = alloc_handle( current->process, current->fast_alert_event, SYNCHRONIZE, 0 );
 }
