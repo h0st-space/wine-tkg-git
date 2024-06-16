@@ -116,6 +116,8 @@ struct file_view
 
 #define SYMBOLIC_LINK_QUERY 0x0001
 
+#define SYMBOLIC_LINK_QUERY 0x0001
+
 /* per-page protection flags */
 #define VPROT_READ       0x01
 #define VPROT_WRITE      0x02
@@ -4616,6 +4618,22 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
     if (!is_old_wow64() && zero_bits >= 32) return STATUS_INVALID_PARAMETER_3;
 #endif
     if (type & ~type_mask) return STATUS_INVALID_PARAMETER;
+
+    if (type & MEM_WRITE_WATCH)
+    {
+        static int disable = -1;
+
+        if (disable == -1)
+        {
+            const char *env_var;
+
+            if ((disable = (env_var = getenv("WINE_DISABLE_WRITE_WATCH")) && atoi(env_var)))
+                FIXME("Disabling write watch support.\n");
+        }
+
+        if (disable)
+            return STATUS_NOT_SUPPORTED;
+    }
 
     if (process != NtCurrentProcess())
     {

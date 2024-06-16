@@ -62,7 +62,7 @@ cpprog=${CPPROG-cp}
 mkdirprog=${MKDIRPROG-mkdir}
 mvprog=${MVPROG-mv}
 rmprog=${RMPROG-rm}
-stripprog=${STRIPPROG-strip}
+stripprog=
 
 posix_mkdir=
 

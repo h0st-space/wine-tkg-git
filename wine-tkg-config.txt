@@ -1,28 +1,15 @@
-# Last wine-tkg-git configuration - Sat Jun 15 05:55:46 PM CEST 2024 :
+# Last wine-tkg-git configuration - Sun Jun 16 11:09:25 AM CEST 2024 :
 
 Local cfg files used
 
-Wine (plain) version: 9.11.r0.g63e25f9edaf
+Wine (plain) version: 
 
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
 
-Done applying backports hotfixes (if any) - list available in prepare.log
-Done applying reverting hotfixes (if any) - list available in prepare.log
+
+( FS hack unbreak reverts applied )
 
 
-childwindow-proton-mainline.patch -- ( Applied child window for vk patch (mainline) )
-LAA-unix.patch -- ( Applied large address aware override support (legacy) )
 
-ntsync5-mainline.patch -- ( Using ntsync patchset )
-msvcrt_nativebuiltin_mainline.patch -- ( Enforce msvcrt Dlls to native then builtin (from Proton) )
-josh-flat-theme.patch -- ( Add Josh's better-theme )
-proton-win10-default.patch -- ( Enforce win10 as default wine version )
-proton_battleye.patch -- ( Add support for Proton's Battleye runtime )
-proton-eac_bridge.patch -- ( Add support for Proton's EAC bridge )
 
-Applied hotfix Return_nt_filename_and_resolve_DOS_drive_path.mypatch
-Applied hotfix a608ef1.mypatch
-Applied hotfix opencl-fixup.mypatch
-Applied hotfix nostale_mouse_fix.mypatch
 
-wine-tkg.patch -- ( Please don't report bugs about this wine build on winehq.org and use https://github.com/Frogging-Family/wine-tkg-git/issues instead. )

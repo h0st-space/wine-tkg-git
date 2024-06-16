@@ -2672,7 +2672,6 @@ BOOL X11DRV_CreateWindowSurface( HWND hwnd, UINT swp_flags, const RECT *visible_
 
     if (data->embedded) goto done; /* draw directly to the window */
     if (data->whole_window == root_window) goto done; /* draw directly to the window */
-    if (data->client_window) goto done; /* draw directly to the window */
     if (!client_side_graphics && !layered) goto done; /* draw directly to the window */
 
     if (!get_surface_rect( visible_rect, &surface_rect )) goto done;

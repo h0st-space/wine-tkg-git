@@ -996,6 +996,7 @@ enable_atl80
 enable_atl90
 enable_atlthunk
 enable_atmlib
+enable_audioses
 enable_authz
 enable_avicap32
 enable_avifil32
@@ -1638,7 +1639,6 @@ enable_po
 enable_arp
 enable_aspnet_regiis
 enable_attrib
-enable_belauncher
 enable_cabarc
 enable_cacls
 enable_certutil
@@ -1650,6 +1650,7 @@ enable_control
 enable_cscript
 enable_dism
 enable_dllhost
+enable_dotnetfx35
 enable_dplaysvr
 enable_dpnsvr
 enable_dpvsetup
@@ -23231,6 +23232,7 @@ wine_fn_config_makefile dlls/atl90 enable_atl90
 wine_fn_config_makefile dlls/atlthunk enable_atlthunk
 wine_fn_config_makefile dlls/atlthunk/tests enable_tests
 wine_fn_config_makefile dlls/atmlib enable_atmlib
+wine_fn_config_makefile dlls/audioses enable_audioses
 wine_fn_config_makefile dlls/authz enable_authz
 wine_fn_config_makefile dlls/avicap32 enable_avicap32
 wine_fn_config_makefile dlls/avifil32 enable_avifil32
@@ -24215,7 +24217,6 @@ wine_fn_config_makefile po enable_po
 wine_fn_config_makefile programs/arp enable_arp
 wine_fn_config_makefile programs/aspnet_regiis enable_aspnet_regiis
 wine_fn_config_makefile programs/attrib enable_attrib
-wine_fn_config_makefile programs/belauncher enable_belauncher
 wine_fn_config_makefile programs/cabarc enable_cabarc
 wine_fn_config_makefile programs/cacls enable_cacls
 wine_fn_config_makefile programs/certutil enable_certutil
@@ -24229,6 +24230,7 @@ wine_fn_config_makefile programs/control enable_control
 wine_fn_config_makefile programs/cscript enable_cscript
 wine_fn_config_makefile programs/dism enable_dism
 wine_fn_config_makefile programs/dllhost enable_dllhost
+wine_fn_config_makefile programs/dotnetfx35 enable_dotnetfx35
 wine_fn_config_makefile programs/dplaysvr enable_dplaysvr
 wine_fn_config_makefile programs/dpnsvr enable_dpnsvr
 wine_fn_config_makefile programs/dpvsetup enable_dpvsetup

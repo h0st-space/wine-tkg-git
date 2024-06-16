@@ -211,4 +211,6 @@ struct dxgi_resource
 HRESULT dxgi_resource_init(struct dxgi_resource *resource, IDXGIDevice *device,
         IUnknown *outer, BOOL needs_surface, struct wined3d_resource *wined3d_resource);
 
+HRESULT get_re8_dxgi_factory(REFIID riid, void **factory);
+
 #endif /* __WINE_DXGI_PRIVATE_H */

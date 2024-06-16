@@ -3672,8 +3672,16 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
     int name_len, unix_len;
     NTSTATUS status;
 
+    if (!attr->ObjectName->Buffer && attr->ObjectName->Length)
+        return STATUS_ACCESS_VIOLATION;
+
     if (!attr->RootDirectory)  /* without root dir fall back to normal lookup */
+    {
+        if (!attr->ObjectName->Buffer)
+            return STATUS_OBJECT_PATH_SYNTAX_BAD;
+
         return nt_to_unix_file_name_no_root( attr->ObjectName, name_ret, disposition );
+    }
 
     name     = attr->ObjectName->Buffer;
     name_len = attr->ObjectName->Length / sizeof(WCHAR);
