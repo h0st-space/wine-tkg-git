@@ -118,6 +118,23 @@ static void gtk3_set(BOOL status)
     set_reg_key(config_key, keypath(L""), L"ThemeEngine", status ? L"GTK" : NULL);
 }
 
+/*
+ * OpenGL shading language toggle
+ */
+static BOOL glsl_get(void)
+{
+    char *buf = get_reg_key(config_key, "Direct3D", "MaxVersionGL", NULL);
+    BOOL ret = buf ? !!*buf : FALSE;
+    HeapFree(GetProcessHeap(), 0, buf);
+    return ret;
+}
+
+static void glsl_set(BOOL status)
+{
+    set_reg_key(config_key, "Direct3D", "UseGLSL", status ? "disabled" : "enabled");
+    set_reg_key_dword(config_key, "Direct3D", "MaxVersionGL", status ? 0x00030001 : NULL);
+}
+
 static void load_staging_settings(HWND dialog)
 {
     CheckDlgButton(dialog, IDC_DISABLE_CSMT, csmt_get() ? BST_CHECKED : BST_UNCHECKED);
@@ -125,6 +142,7 @@ static void load_staging_settings(HWND dialog)
     CheckDlgButton(dialog, IDC_ENABLE_EAX, eax_get() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_ENABLE_HIDEWINE, hidewine_get() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_ENABLE_GTK3, gtk3_get() ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_ENABLE_ARB, glsl_get() ? BST_CHECKED : BST_UNCHECKED);
 }
 
 INT_PTR CALLBACK StagingDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -168,6 +186,10 @@ INT_PTR CALLBACK StagingDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lPar
             return TRUE;
         case IDC_ENABLE_GTK3:
             gtk3_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_GTK3) == BST_CHECKED);
+            SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
+            return TRUE;
+            case IDC_ENABLE_ARB:
+            glsl_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_ARB) == BST_CHECKED);
             SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
             return TRUE;
         }

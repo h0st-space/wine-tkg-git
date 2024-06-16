@@ -1362,6 +1362,12 @@ void signal_init_process(void)
     exit(1);
 }
 
+/**********************************************************************
+ *    signal_init_early
+ */
+void signal_init_early(void)
+{
+}
 
 /***********************************************************************
  *           syscall_dispatcher_return_slowpath

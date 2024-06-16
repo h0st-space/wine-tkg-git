@@ -115,6 +115,7 @@ MAKE_FUNCPTR(SDL_GameControllerAddMapping);
 MAKE_FUNCPTR(SDL_RegisterEvents);
 MAKE_FUNCPTR(SDL_PushEvent);
 MAKE_FUNCPTR(SDL_GetTicks);
+MAKE_FUNCPTR(SDL_LogSetPriority);
 static int (*pSDL_JoystickRumble)(SDL_Joystick *joystick, Uint16 low_frequency_rumble, Uint16 high_frequency_rumble, Uint32 duration_ms);
 static int (*pSDL_JoystickRumbleTriggers)(SDL_Joystick *joystick, Uint16 left_rumble, Uint16 right_rumble, Uint32 duration_ms);
 static Uint16 (*pSDL_JoystickGetProduct)(SDL_Joystick * joystick);
@@ -952,16 +953,8 @@ static void sdl_add_device(unsigned int index)
         return;
     }
 
-    if (options.map_controllers && pSDL_IsGameController(index))
-        controller = pSDL_GameControllerOpen(index);
-
-    if (controller) product = pSDL_GameControllerName(controller);
-    else product = pSDL_JoystickName(joystick);
-    if (!product) product = "Joystick";
-
-    id = pSDL_JoystickInstanceID(joystick);
-
-    if (pSDL_JoystickGetProductVersion != NULL) {
+    if (pSDL_JoystickGetProductVersion != NULL)
+    {
         desc.vid = pSDL_JoystickGetVendor(joystick);
         desc.pid = pSDL_JoystickGetProduct(joystick);
         desc.version = pSDL_JoystickGetProductVersion(joystick);
@@ -972,6 +965,36 @@ static void sdl_add_device(unsigned int index)
         desc.pid = pSDL_JoystickInstanceID(joystick) + 1;
         desc.version = 0;
     }
+
+    if (is_sdl_blacklisted(desc.vid, desc.pid))
+    {
+        /* this device is blacklisted */
+        TRACE("ignoring %s, in SDL blacklist\n", debugstr_device_desc(&desc));
+        return;
+    }
+
+    if (is_wine_blacklisted(desc.vid, desc.pid))
+    {
+        /* this device is blacklisted */
+        TRACE("ignoring %s, in Wine blacklist\n", debugstr_device_desc(&desc));
+        return;
+    }
+
+    if (desc.vid == 0x28de && desc.pid == 0x11ff)
+    {
+        TRACE("Steam virtual controller, pretending it's an Xbox 360 controller\n");
+        desc.vid = 0x045e;
+        desc.pid = 0x028e;
+    }
+
+    if (options.map_controllers && pSDL_IsGameController(index))
+        controller = pSDL_GameControllerOpen(index);
+
+    if (controller) product = pSDL_GameControllerName(controller);
+    else product = pSDL_JoystickName(joystick);
+    if (!product) product = "Joystick";
+
+    id = pSDL_JoystickInstanceID(joystick);
 
     if (pSDL_JoystickGetSerial && (sdl_serial = pSDL_JoystickGetSerial(joystick)))
     {
@@ -1138,6 +1161,7 @@ NTSTATUS sdl_bus_init(void *args)
     LOAD_FUNCPTR(SDL_RegisterEvents);
     LOAD_FUNCPTR(SDL_PushEvent);
     LOAD_FUNCPTR(SDL_GetTicks);
+    LOAD_FUNCPTR(SDL_LogSetPriority);
 #undef LOAD_FUNCPTR
     pSDL_JoystickRumble = dlsym(sdl_handle, "SDL_JoystickRumble");
     pSDL_JoystickRumbleTriggers = dlsym(sdl_handle, "SDL_JoystickRumbleTriggers");
@@ -1157,6 +1181,11 @@ NTSTATUS sdl_bus_init(void *args)
     {
         ERR("error registering quit event\n");
         goto failed;
+    }
+
+    if (TRACE_ON(hid))
+    {
+        pSDL_LogSetPriority(SDL_LOG_CATEGORY_INPUT, SDL_LOG_PRIORITY_VERBOSE);
     }
 
     pSDL_JoystickEventState(SDL_ENABLE);

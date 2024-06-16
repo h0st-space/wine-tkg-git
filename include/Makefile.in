@@ -734,6 +734,7 @@ SOURCES = \
 	srrestoreptapi.h \
 	sspi.h \
 	stamp-h.in \
+	stdole32.idl \
 	stgprop.h \
 	sti.h \
 	storage.h \
@@ -908,6 +909,7 @@ SOURCES = \
 	wine/irot.idl \
 	wine/irpcss.idl \
 	wine/itss.idl \
+	wine/js_blacklist.h \
 	wine/list.h \
 	wine/mfinternal.idl \
 	wine/mmsystem16.h \

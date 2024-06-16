@@ -2445,6 +2445,20 @@ static void dump_flush_key_request( const struct flush_key_request *req )
     fprintf( stderr, " hkey=%04x", req->hkey );
 }
 
+static void dump_flush_key_reply( const struct flush_key_reply *req )
+{
+    dump_abstime( " timestamp_counter=", &req->timestamp_counter );
+    fprintf( stderr, ", total=%u", req->total );
+    fprintf( stderr, ", branch_count=%d", req->branch_count );
+    dump_varargs_bytes( ", data=", cur_size );
+}
+
+static void dump_flush_key_done_request( const struct flush_key_done_request *req )
+{
+    dump_abstime( " timestamp_counter=", &req->timestamp_counter );
+    fprintf( stderr, ", branch=%d", req->branch );
+}
+
 static void dump_enum_key_request( const struct enum_key_request *req )
 {
     fprintf( stderr, " hkey=%04x", req->hkey );
@@ -2527,7 +2541,12 @@ static void dump_unload_registry_request( const struct unload_registry_request *
 static void dump_save_registry_request( const struct save_registry_request *req )
 {
     fprintf( stderr, " hkey=%04x", req->hkey );
-    fprintf( stderr, ", file=%04x", req->file );
+}
+
+static void dump_save_registry_reply( const struct save_registry_reply *req )
+{
+    fprintf( stderr, " total=%u", req->total );
+    dump_varargs_bytes( ", data=", cur_size );
 }
 
 static void dump_set_registry_notification_request( const struct set_registry_notification_request *req )
@@ -3240,6 +3259,12 @@ static void dump_set_window_region_request( const struct set_window_region_reque
 {
     fprintf( stderr, " window=%08x", req->window );
     fprintf( stderr, ", redraw=%d", req->redraw );
+    dump_varargs_rectangles( ", region=", cur_size );
+}
+
+static void dump_set_layer_region_request( const struct set_layer_region_request *req )
+{
+    fprintf( stderr, " window=%08x", req->window );
     dump_varargs_rectangles( ", region=", cur_size );
 }
 
@@ -4624,18 +4649,6 @@ static void dump_get_next_thread_reply( const struct get_next_thread_reply *req 
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
-static void dump_set_keyboard_repeat_request( const struct set_keyboard_repeat_request *req )
-{
-    fprintf( stderr, " enable=%d", req->enable );
-    fprintf( stderr, ", delay=%d", req->delay );
-    fprintf( stderr, ", period=%d", req->period );
-}
-
-static void dump_set_keyboard_repeat_reply( const struct set_keyboard_repeat_reply *req )
-{
-    fprintf( stderr, " enable=%d", req->enable );
-}
-
 static void dump_create_esync_request( const struct create_esync_request *req )
 {
     fprintf( stderr, " access=%08x", req->access );
@@ -4682,6 +4695,18 @@ static void dump_get_esync_fd_reply( const struct get_esync_fd_reply *req )
 static void dump_esync_msgwait_request( const struct esync_msgwait_request *req )
 {
     fprintf( stderr, " in_msgwait=%d", req->in_msgwait );
+}
+
+static void dump_set_keyboard_repeat_request( const struct set_keyboard_repeat_request *req )
+{
+    fprintf( stderr, " enable=%d", req->enable );
+    fprintf( stderr, ", delay=%d", req->delay );
+    fprintf( stderr, ", period=%d", req->period );
+}
+
+static void dump_set_keyboard_repeat_reply( const struct set_keyboard_repeat_reply *req )
+{
+    fprintf( stderr, " enable=%d", req->enable );
 }
 
 static void dump_get_esync_apc_fd_request( const struct get_esync_apc_fd_request *req )
@@ -4835,6 +4860,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_open_key_request,
     (dump_func)dump_delete_key_request,
     (dump_func)dump_flush_key_request,
+    (dump_func)dump_flush_key_done_request,
     (dump_func)dump_enum_key_request,
     (dump_func)dump_set_key_value_request,
     (dump_func)dump_get_key_value_request,
@@ -4904,6 +4930,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_get_visible_region_request,
     (dump_func)dump_get_window_region_request,
     (dump_func)dump_set_window_region_request,
+    (dump_func)dump_set_layer_region_request,
     (dump_func)dump_get_update_region_request,
     (dump_func)dump_update_window_zorder_request,
     (dump_func)dump_redraw_window_request,
@@ -5030,11 +5057,11 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_suspend_process_request,
     (dump_func)dump_resume_process_request,
     (dump_func)dump_get_next_thread_request,
-    (dump_func)dump_set_keyboard_repeat_request,
     (dump_func)dump_create_esync_request,
     (dump_func)dump_open_esync_request,
     (dump_func)dump_get_esync_fd_request,
     (dump_func)dump_esync_msgwait_request,
+    (dump_func)dump_set_keyboard_repeat_request,
     (dump_func)dump_get_esync_apc_fd_request,
     (dump_func)dump_create_fsync_request,
     (dump_func)dump_open_fsync_request,
@@ -5132,6 +5159,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_create_key_reply,
     (dump_func)dump_open_key_reply,
     NULL,
+    (dump_func)dump_flush_key_reply,
     NULL,
     (dump_func)dump_enum_key_reply,
     NULL,
@@ -5140,7 +5168,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     NULL,
-    NULL,
+    (dump_func)dump_save_registry_reply,
     NULL,
     NULL,
     (dump_func)dump_create_timer_reply,
@@ -5201,6 +5229,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_get_windows_offset_reply,
     (dump_func)dump_get_visible_region_reply,
     (dump_func)dump_get_window_region_reply,
+    NULL,
     NULL,
     (dump_func)dump_get_update_region_reply,
     NULL,
@@ -5328,11 +5357,11 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     (dump_func)dump_get_next_thread_reply,
-    (dump_func)dump_set_keyboard_repeat_reply,
     (dump_func)dump_create_esync_reply,
     (dump_func)dump_open_esync_reply,
     (dump_func)dump_get_esync_fd_reply,
     NULL,
+    (dump_func)dump_set_keyboard_repeat_reply,
     NULL,
     (dump_func)dump_create_fsync_reply,
     (dump_func)dump_open_fsync_reply,
@@ -5431,6 +5460,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "open_key",
     "delete_key",
     "flush_key",
+    "flush_key_done",
     "enum_key",
     "set_key_value",
     "get_key_value",
@@ -5500,6 +5530,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "get_visible_region",
     "get_window_region",
     "set_window_region",
+    "set_layer_region",
     "get_update_region",
     "update_window_zorder",
     "redraw_window",
@@ -5626,11 +5657,11 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "suspend_process",
     "resume_process",
     "get_next_thread",
-    "set_keyboard_repeat",
     "create_esync",
     "open_esync",
     "get_esync_fd",
     "esync_msgwait",
+    "set_keyboard_repeat",
     "get_esync_apc_fd",
     "create_fsync",
     "open_fsync",

@@ -713,19 +713,25 @@ BOOL WINAPI SQLGetInstalledDrivers(char *buf, WORD size, WORD *sizeout)
 
 static HKEY get_privateprofile_sectionkey(LPCWSTR section, LPCWSTR filename)
 {
-    HKEY hkey, hkeyfilename, hkeysection;
+    HKEY hkeysection;
     LONG ret;
+    WCHAR *regpath;
 
-    if (RegOpenKeyW(HKEY_CURRENT_USER, odbcW, &hkey))
+    regpath = malloc ( (wcslen(L"Software\\ODBC\\") + wcslen(filename) + wcslen(L"\\")
+                            + wcslen(section) + 1) * sizeof(WCHAR));
+    if (!regpath)
         return NULL;
 
-    ret = RegOpenKeyW(hkey, filename, &hkeyfilename);
-    RegCloseKey(hkey);
-    if (ret)
-        return NULL;
+    wcscpy(regpath, L"Software\\ODBC\\");
+    wcscat(regpath, filename);
+    wcscat(regpath, L"\\");
+    wcscat(regpath, section);
 
-    ret = RegOpenKeyW(hkeyfilename, section, &hkeysection);
-    RegCloseKey(hkeyfilename);
+    if ((ret = RegOpenKeyW(HKEY_CURRENT_USER, regpath, &hkeysection)) != ERROR_SUCCESS)
+    {
+        ret = RegOpenKeyW(HKEY_LOCAL_MACHINE, regpath, &hkeysection);
+    }
+    free(regpath);
 
     return ret ? NULL : hkeysection;
 }
@@ -1804,6 +1810,7 @@ BOOL WINAPI SQLWritePrivateProfileStringW(LPCWSTR lpszSection, LPCWSTR lpszEntry
     static const WCHAR empty[] = {0};
     LONG ret;
     HKEY hkey;
+    WCHAR *regpath;
 
     clear_errors();
     TRACE("%s %s %s %s\n", debugstr_w(lpszSection), debugstr_w(lpszEntry),
@@ -1815,7 +1822,34 @@ BOOL WINAPI SQLWritePrivateProfileStringW(LPCWSTR lpszSection, LPCWSTR lpszEntry
         return FALSE;
     }
 
-    if ((ret = RegCreateKeyW(HKEY_CURRENT_USER, odbcW, &hkey)) == ERROR_SUCCESS)
+    regpath = malloc ( (wcslen(L"Software\\ODBC\\") + wcslen(lpszFilename) + wcslen(L"\\")
+                            + wcslen(lpszSection) + 1) * sizeof(WCHAR));
+    if (!regpath)
+    {
+        push_error(ODBC_ERROR_OUT_OF_MEM, odbc_error_out_of_mem);
+        return FALSE;
+    }
+    wcscpy(regpath, L"Software\\ODBC\\");
+    wcscat(regpath, lpszFilename);
+    wcscat(regpath, L"\\");
+    wcscat(regpath, lpszSection);
+
+    /* Check an existing key first before writing a new one */
+    if ((ret = RegOpenKeyW(HKEY_CURRENT_USER, regpath, &hkey)) != ERROR_SUCCESS)
+    {
+        ret = RegOpenKeyW(HKEY_LOCAL_MACHINE, regpath, &hkey);
+    }
+    free(regpath);
+
+    if (ret == ERROR_SUCCESS)
+    {
+        if(lpszString)
+            ret = RegSetValueExW(hkey, lpszEntry, 0, REG_SZ, (BYTE*)lpszString, (lstrlenW(lpszString)+1)*sizeof(WCHAR));
+        else
+            ret = RegSetValueExW(hkey, lpszEntry, 0, REG_SZ, (BYTE*)empty, sizeof(empty));
+        RegCloseKey(hkey);
+    }
+    else if ((ret = RegCreateKeyW(HKEY_CURRENT_USER, odbcW, &hkey)) == ERROR_SUCCESS)
     {
          HKEY hkeyfilename;
 

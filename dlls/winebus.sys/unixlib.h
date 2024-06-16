@@ -30,6 +30,7 @@
 
 #include "wine/debug.h"
 #include "wine/list.h"
+#include "wine/js_blacklist.h" /* for wine_js_blacklist */
 
 struct device_desc
 {
@@ -154,6 +155,50 @@ static inline const char *debugstr_device_desc(struct device_desc *desc)
     return wine_dbg_sprintf("{vid %04x, pid %04x, version %04x, input %d, uid %08x, usage %04x:%04x, is_gamepad %u, is_hidraw %u, is_bluetooth %u}",
                             desc->vid, desc->pid, desc->version, desc->input, desc->uid, desc->usages.UsagePage, desc->usages.Usage,
                             desc->is_gamepad, desc->is_hidraw, desc->is_bluetooth);
+}
+
+static inline BOOL is_wine_blacklisted(DWORD vid, DWORD pid)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(wine_js_blacklist); ++i)
+    {
+        if (vid != wine_js_blacklist[i].vid) continue;
+        if (!wine_js_blacklist[i].pid || wine_js_blacklist[i].pid == pid) return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* logic from SDL2's SDL_ShouldIgnoreGameController */
+static inline BOOL is_sdl_blacklisted(DWORD vid, DWORD pid)
+{
+    const char *allow_virtual = getenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD");
+    const char *whitelist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT");
+    const char *blacklist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    char needle[16];
+
+    if (vid == 0x28de && pid == 0x11ff && allow_virtual && *allow_virtual &&
+        *allow_virtual != '0' && strcasecmp(allow_virtual, "false"))
+        return FALSE;
+
+    sprintf(needle, "0x%04x/0x%04x", vid, pid);
+    if (whitelist) return strcasestr(whitelist, needle) == NULL;
+    if (blacklist) return strcasestr(blacklist, needle) != NULL;
+    return FALSE;
+}
+
+static inline BOOL is_steam_controller(WORD vid, WORD pid)
+{
+    if (vid != 0x28de) return FALSE;
+    if (pid == 0x1101) return TRUE; /* Valve Legacy Steam Controller */
+    if (pid == 0x1102) return TRUE; /* Valve wired Steam Controller */
+    if (pid == 0x1105) return TRUE; /* Valve Bluetooth Steam Controller */
+    if (pid == 0x1106) return TRUE; /* Valve Bluetooth Steam Controller */
+    if (pid == 0x1142) return TRUE; /* Valve wireless Steam Controller */
+    if (pid == 0x1201) return TRUE; /* Valve wired Steam Controller */
+    if (pid == 0x1202) return TRUE; /* Valve Bluetooth Steam Controller */
+    return FALSE;
 }
 
 static inline BOOL is_xbox_gamepad(WORD vid, WORD pid)

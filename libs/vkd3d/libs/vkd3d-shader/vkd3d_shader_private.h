@@ -455,6 +455,10 @@ enum vkd3d_shader_opcode
     VKD3DSIH_PHASE,
     VKD3DSIH_PHI,
     VKD3DSIH_POW,
+    VKD3DSIH_QUAD_READ_ACROSS_D,
+    VKD3DSIH_QUAD_READ_ACROSS_X,
+    VKD3DSIH_QUAD_READ_ACROSS_Y,
+    VKD3DSIH_QUAD_READ_LANE_AT,
     VKD3DSIH_RCP,
     VKD3DSIH_REP,
     VKD3DSIH_RESINFO,
@@ -805,6 +809,7 @@ enum vkd3d_tessellator_domain
 
 #define VKD3DSI_NONE                    0x0
 #define VKD3DSI_TEXLD_PROJECT           0x1
+#define VKD3DSI_TEXLD_BIAS              0x2
 #define VKD3DSI_INDEXED_DYNAMIC         0x4
 #define VKD3DSI_RESINFO_RCP_FLOAT       0x1
 #define VKD3DSI_RESINFO_UINT            0x2
@@ -1189,7 +1194,7 @@ struct vkd3d_shader_location
 struct vkd3d_shader_instruction
 {
     struct vkd3d_shader_location location;
-    enum vkd3d_shader_opcode handler_idx;
+    enum vkd3d_shader_opcode opcode;
     uint32_t flags;
     unsigned int dst_count;
     unsigned int src_count;
@@ -1238,8 +1243,8 @@ static inline bool vkd3d_shader_ver_le(const struct vkd3d_shader_version *v, uns
     return v->major < major || (v->major == major && v->minor <= minor);
 }
 
-void vsir_instruction_init(struct vkd3d_shader_instruction *ins, const struct vkd3d_shader_location *location,
-        enum vkd3d_shader_opcode handler_idx);
+void vsir_instruction_init(struct vkd3d_shader_instruction *ins,
+        const struct vkd3d_shader_location *location, enum vkd3d_shader_opcode opcode);
 
 static inline bool vkd3d_shader_instruction_has_texel_offset(const struct vkd3d_shader_instruction *ins)
 {
