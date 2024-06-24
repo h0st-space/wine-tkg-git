@@ -90,7 +90,6 @@ extern void unregister_imm_window( HWND hwnd );
 extern BOOL grab_pointer;
 extern BOOL grab_fullscreen;
 extern BOOL destroy_caret(void);
-extern LONG global_key_state_counter;
 extern HWND get_active_window(void);
 extern HWND get_capture(void);
 extern BOOL get_cursor_pos( POINT *pt );
@@ -205,6 +204,22 @@ extern void free_vulkan_gpu( struct vulkan_gpu *gpu );
 extern BOOL get_vulkan_uuid_from_luid( const LUID *luid, GUID *uuid );
 
 /* winstation.c */
+
+struct object_lock
+{
+    UINT64 id;
+    UINT64 seq;
+};
+#define OBJECT_LOCK_INIT {0}
+
+/* Get shared session object's data pointer, must be called in a loop while STATUS_PENDING
+ * is returned, lock must be initialized with OBJECT_LOCK_INIT.
+ *
+ * The data read from the objects may be transient and no logic should be executed based
+ * on it, within the loop, or after, unless the function has returned STATUS_SUCCESS.
+ */
+extern NTSTATUS get_shared_desktop( struct object_lock *lock, const desktop_shm_t **desktop_shm );
+
 extern BOOL is_virtual_desktop(void);
 
 /* window.c */

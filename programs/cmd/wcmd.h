@@ -70,9 +70,7 @@ typedef struct _CMD_IF_CONDITION
              op;
     union
     {
-        /* CMD_IF_ERRORLEVEL */
-        int level;
-        /* CMD_IF_EXIST, CMD_IF_DEFINED */
+        /* CMD_IF_ERRORLEVEL, CMD_IF_EXIST, CMD_IF_DEFINED */
         const WCHAR *operand;
         /* CMD_BINOP_EQUAL, CMD_BINOP_LSS, CMD_BINOP_LEQ, CMD_BINOP_EQU, CMD_BINOP_NEQ, CMD_BINOP_GEQ, CMD_BINOP_GTR */
         struct
@@ -82,6 +80,31 @@ typedef struct _CMD_IF_CONDITION
         };
     };
 } CMD_IF_CONDITION;
+
+#define CMD_FOR_FLAG_TREE_RECURSE (1u << 0)
+#define CMD_FOR_FLAG_TREE_INCLUDE_FILES (1u << 1)
+#define CMD_FOR_FLAG_TREE_INCLUDE_DIRECTORIES (1u << 2)
+
+typedef struct _CMD_FOR_CONTROL
+{
+    enum for_control_operator {CMD_FOR_FILETREE, CMD_FOR_FILE_SET /* /F */,
+                               CMD_FOR_NUMBERS /* /L */} operator;
+    unsigned flags;               /* |-ed CMD_FOR_FLAG_* */
+    int variable_index;
+    const WCHAR *set;
+    union
+    {
+        const WCHAR *root_dir;    /* for CMD_FOR_FILETREE */
+        struct                    /* for CMD_FOR_FILE_SET */
+        {
+            WCHAR eol;
+            BOOL use_backq;
+            int num_lines_to_skip;
+            const WCHAR *delims;
+            const WCHAR *tokens;
+        };
+    };
+} CMD_FOR_CONTROL;
 
 typedef struct _CMD_COMMAND
 {
@@ -129,6 +152,35 @@ void if_condition_dispose(CMD_IF_CONDITION *);
 BOOL if_condition_evaluate(CMD_IF_CONDITION *cond, int *test);
 const char *debugstr_if_condition(const CMD_IF_CONDITION *cond);
 
+void for_control_create(enum for_control_operator for_op, unsigned flags, const WCHAR *options, int var_idx, CMD_FOR_CONTROL *for_ctrl);
+void for_control_create_fileset(unsigned flags, int var_idx, WCHAR eol, int num_lines_to_skip, BOOL use_backq,
+                                 const WCHAR *delims, const WCHAR *tokens,
+                                 CMD_FOR_CONTROL *for_ctrl);
+CMD_FOR_CONTROL *for_control_parse(WCHAR *opts_var);
+void for_control_append_set(CMD_FOR_CONTROL *for_ctrl, const WCHAR *string);
+void for_control_dump(const CMD_FOR_CONTROL *for_ctrl);
+void for_control_dispose(CMD_FOR_CONTROL *for_ctrl);
+void for_control_execute(CMD_FOR_CONTROL *for_ctrl, CMD_NODE **cmdList);
+int WCMD_for_nexttoken(int lasttoken, const WCHAR *tokenstr,
+                       int *totalfound, BOOL *doall,
+                       BOOL *duplicates);
+void WCMD_part_execute(CMD_NODE **cmdList, const WCHAR *firstcmd,
+                       BOOL isIF, BOOL executecmds);
+struct _DIRECTORY_STACK;
+void WCMD_add_dirstowalk(struct _DIRECTORY_STACK *dirsToWalk);
+struct _DIRECTORY_STACK *WCMD_dir_stack_create(const WCHAR *dir, const WCHAR *file);
+struct _DIRECTORY_STACK *WCMD_dir_stack_free(struct _DIRECTORY_STACK *dir);
+
+/* The return code:
+ * - some of them are directly mapped to kernel32's errors
+ * - some others are cmd.exe specific
+ * - ABORTED if used to break out of FOR/IF blocks (to handle GOTO, EXIT commands)
+ */
+typedef int RETURN_CODE;
+#define RETURN_CODE_SYNTAX_ERROR         255
+#define RETURN_CODE_CANT_LAUNCH          9009
+#define RETURN_CODE_ABORTED              (-999999)
+
 void WCMD_assoc (const WCHAR *, BOOL);
 void WCMD_batch (WCHAR *, WCHAR *, BOOL, WCHAR *, HANDLE);
 void WCMD_call (WCHAR *command);
@@ -143,11 +195,11 @@ void WCMD_directory (WCHAR *);
 void WCMD_echo (const WCHAR *);
 void WCMD_endlocal (void);
 void WCMD_enter_paged_mode(const WCHAR *);
-void WCMD_exit (CMD_NODE **cmdList);
+RETURN_CODE WCMD_exit(void);
 void WCMD_for (WCHAR *, CMD_NODE **cmdList);
 BOOL WCMD_get_fullpath(const WCHAR *, SIZE_T, WCHAR *, WCHAR **);
 void WCMD_give_help (const WCHAR *args);
-void WCMD_goto (CMD_NODE **cmdList);
+RETURN_CODE WCMD_goto(void);
 void WCMD_if (WCHAR *, CMD_NODE **cmdList);
 void WCMD_leave_paged_mode(void);
 void WCMD_more (WCHAR *);
@@ -266,13 +318,39 @@ typedef struct _DIRECTORY_STACK
 
 /* Data structure to for loop variables during for body execution, bearing
    in mind that for loops can be nested                                    */
-#define MAX_FOR_VARIABLES 52
-#define FOR_VAR_IDX(c) (((c)>='a'&&(c)<='z')?((c)-'a'):\
-                        ((c)>='A'&&(c)<='Z')?(26+(c)-'A'):-1)
+#define MAX_FOR_VARIABLES (2*26+10)
 
-typedef struct _FOR_CONTEXT {
-  WCHAR *variable[MAX_FOR_VARIABLES];	/* a-z then A-Z */
+static inline int for_var_char_to_index(WCHAR c)
+{
+    if (c >= L'a' && c <= L'z') return c - L'a';
+    if (c >= L'A' && c <= L'Z') return c - L'A' + 26;
+    if (c >= L'0' && c <= L'9') return c - L'0' + 2 * 26;
+    return -1;
+}
+
+static inline WCHAR for_var_index_to_char(int var_idx)
+{
+    if (var_idx < 0 || var_idx >= MAX_FOR_VARIABLES) return L'?';
+    if (var_idx < 26) return L'a' + var_idx;
+    if (var_idx < 52) return L'A' + var_idx - 26;
+    return L'0' + var_idx - 52;
+}
+
+/* check that the range [var_idx, var_idx + var_offset] is a contiguous range */
+static inline BOOL for_var_index_in_range(int var_idx, int var_offset)
+{
+    return for_var_char_to_index(for_var_index_to_char(var_idx) + var_offset) == var_idx + var_offset;
+}
+
+typedef struct _FOR_CONTEXT
+{
+    struct _FOR_CONTEXT *previous;
+    WCHAR *variable[MAX_FOR_VARIABLES];	/* a-z then A-Z */
 } FOR_CONTEXT;
+
+void WCMD_save_for_loop_context(BOOL reset);
+void WCMD_restore_for_loop_context(void);
+void WCMD_set_for_loop_variable(int var_idx, const WCHAR *value);
 
 /*
  * Global variables quals, param1, param2 contain the current qualifiers
@@ -280,9 +358,9 @@ typedef struct _FOR_CONTEXT {
  * variables and batch parameters substitution already done.
  */
 extern WCHAR quals[MAXSTRING], param1[MAXSTRING], param2[MAXSTRING];
-extern int errorlevel;
+extern DWORD errorlevel;
 extern BATCH_CONTEXT *context;
-extern FOR_CONTEXT forloopcontext;
+extern FOR_CONTEXT *forloopcontext;
 extern BOOL delayedsubst;
 
 #endif /* !RC_INVOKED */
@@ -399,3 +477,4 @@ extern WCHAR version_string[];
 #define WCMD_BADPAREN         1044
 #define WCMD_BADHEXOCT        1045
 #define WCMD_FILENAMETOOLONG  1046
+#define WCMD_BADTOKEN         1047

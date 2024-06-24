@@ -296,12 +296,32 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned 
             desktop->foreground_input = NULL;
             desktop->users = 0;
             list_init( &desktop->threads );
-            memset( &desktop->cursor, 0, sizeof(desktop->cursor) );
-            memset( desktop->keystate, 0, sizeof(desktop->keystate) );
+            desktop->clip_flags = 0;
+            desktop->cursor_win = 0;
+            desktop->alt_pressed = 0;
             memset( &desktop->key_repeat, 0, sizeof(desktop->key_repeat) );
             list_add_tail( &winstation->desktops, &desktop->entry );
             list_init( &desktop->hotkeys );
             list_init( &desktop->pointers );
+
+            if (!(desktop->shared = alloc_shared_object()))
+            {
+                release_object( desktop );
+                return NULL;
+            }
+
+            SHARED_WRITE_BEGIN( desktop->shared, desktop_shm_t )
+            {
+                shared->cursor.x = 0;
+                shared->cursor.y = 0;
+                shared->cursor.last_change = 0;
+                shared->cursor.clip.left = 0;
+                shared->cursor.clip.top = 0;
+                shared->cursor.clip.right = 0;
+                shared->cursor.clip.bottom = 0;
+                memset( (void *)shared->keystate, 0, sizeof(shared->keystate) );
+            }
+            SHARED_WRITE_END;
         }
         else
         {
@@ -372,6 +392,7 @@ static void desktop_destroy( struct object *obj )
     if (desktop->close_timeout) remove_timeout_user( desktop->close_timeout );
     if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
     release_object( desktop->winstation );
+    if (desktop->shared) free_shared_object( desktop->shared );
 }
 
 /* retrieve the thread desktop, checking the handle access rights */
@@ -739,10 +760,19 @@ DECL_HANDLER(close_desktop)
 /* get the thread current desktop */
 DECL_HANDLER(get_thread_desktop)
 {
+    struct desktop *desktop;
     struct thread *thread;
 
     if (!(thread = get_thread_from_id( req->tid ))) return;
     reply->handle = thread->desktop;
+
+    if (!(desktop = get_thread_desktop( thread, 0 ))) clear_error();
+    else
+    {
+        if (desktop->shared) reply->locator = get_shared_object_locator( desktop->shared );
+        release_object( desktop );
+    }
+
     release_object( thread );
 }
 
@@ -785,6 +815,7 @@ DECL_HANDLER(set_thread_desktop)
             if (old_desktop) remove_desktop_thread( old_desktop, current );
             add_desktop_thread( new_desktop, current );
         }
+        reply->locator = get_shared_object_locator( new_desktop->shared );
     }
 
     if (!current->process->desktop)

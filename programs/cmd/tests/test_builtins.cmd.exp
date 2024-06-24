@@ -610,11 +610,11 @@ N
 ''
 '.eh'@or_broken@''
 "foo bar"
-@todo_wine@foo
-@todo_wine@bar
+foo
+bar
 --- in digit variables
-@todo_wine@a %1 %2
-@todo_wine@b %1 %2
+a %1 %2
+b %1 %2
 ------------ Testing parameter zero ------------
 :func parm1
 [:func] [@drive@] [@path@] [test] [.cmd] [@drive@@shortpath@test.cmd]
@@ -629,8 +629,9 @@ foo
 foo@or_broken@!WINE_FOO!
 foo
 bar@or_broken@foo
-0
-0@or_broken@1
+gotitright
+33
+@todo_wine@0@or_broken@1
 foo
 !WINE_FOO!
 @todo_wine@not empty
@@ -1014,8 +1015,26 @@ A D
 B C
 B D
 --- nested FORs and args tempering
-@todo_wine@inner argument {-foo, bar}
-@todo_wine@inner argument {-x, y}
+inner argument {-foo, bar}
+inner argument {-x, y}
+--- nesting and delayed expansion
+a 1 2
+1-A2
+1-B1
+2-A1
+2-B2
+b 1 3
+1-A2
+1-B1
+2-A2
+2-B2
+3-A1
+3-B2
+--- nesting if/for
+@todo_wine@"f"
+@todo_wine@"g"
+@todo_wine@"h"
+@todo_wine@---
 --- basic wildcards
 bazbaz
 --- wildcards in subdirs
@@ -1302,6 +1321,16 @@ kkk
 a
 b
 c
+------ quoting and file access
+Aa
+Ab
+Bf.zzz
+Df2.zzz
+Ea
+Eb
+Fa
+Fb
+Jf*.zzz
 ------ command argument
 Passed1@or_broken@Missing functionality - Broken1
 Passed2@or_broken@Missing functionality - Broken2

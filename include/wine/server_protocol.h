@@ -29,6 +29,7 @@ typedef unsigned __int64 mem_size_t;
 typedef unsigned __int64 file_pos_t;
 typedef unsigned __int64 client_ptr_t;
 typedef unsigned __int64 affinity_t;
+typedef unsigned __int64 object_id_t;
 typedef client_ptr_t mod_handle_t;
 
 struct request_header
@@ -878,6 +879,41 @@ struct directory_entry
 
 
 };
+
+
+
+
+struct shared_cursor
+{
+    int                  x;
+    int                  y;
+    unsigned int         last_change;
+    rectangle_t          clip;
+};
+
+typedef volatile struct
+{
+    struct shared_cursor cursor;
+    unsigned char        keystate[256];
+} desktop_shm_t;
+
+typedef volatile union
+{
+    desktop_shm_t        desktop;
+} object_shm_t;
+
+typedef volatile struct
+{
+    LONG64               seq;
+    object_id_t          id;
+    object_shm_t         shm;
+} shared_object_t;
+
+typedef struct
+{
+    object_id_t          id;
+    mem_size_t           offset;
+} obj_locator_t;
 
 
 
@@ -3042,9 +3078,7 @@ struct get_serial_info_reply
 {
     struct reply_header __header;
     unsigned int eventmask;
-    unsigned int cookie;
     unsigned int pending_write;
-    char __pad_20[4];
 };
 
 
@@ -3061,7 +3095,6 @@ struct set_serial_info_reply
     struct reply_header __header;
 };
 #define SERIALINFO_PENDING_WRITE 0x04
-#define SERIALINFO_PENDING_WAIT  0x08
 
 
 struct cancel_sync_request
@@ -3916,8 +3949,9 @@ struct get_thread_desktop_request
 struct get_thread_desktop_reply
 {
     struct reply_header __header;
-    obj_handle_t handle;
-    char __pad_12[4];
+    obj_locator_t  locator;
+    obj_handle_t   handle;
+    char __pad_28[4];
 };
 
 
@@ -3930,6 +3964,7 @@ struct set_thread_desktop_request
 struct set_thread_desktop_reply
 {
     struct reply_header __header;
+    obj_locator_t  locator;
 };
 
 
@@ -6777,7 +6812,7 @@ union generic_reply
 
 /* ### protocol_version begin ### */
 
-#define SERVER_PROTOCOL_VERSION 808
+#define SERVER_PROTOCOL_VERSION 817
 
 /* ### protocol_version end ### */
 

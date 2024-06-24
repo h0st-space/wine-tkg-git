@@ -113,9 +113,6 @@ static pa_mainloop *pulse_ml;
 static struct list g_phys_speakers = LIST_INIT(g_phys_speakers);
 static struct list g_phys_sources = LIST_INIT(g_phys_sources);
 
-static const REFERENCE_TIME MinimumPeriod = 30000;
-static const REFERENCE_TIME DefaultPeriod = 100000;
-
 static pthread_mutex_t pulse_mutex;
 static pthread_cond_t pulse_cond = PTHREAD_COND_INITIALIZER;
 
@@ -752,12 +749,6 @@ static void pulse_probe_settings(pa_mainloop *ml, pa_context *ctx, int render, c
 
     if (length)
         *def_period = *min_period = pa_bytes_to_usec(10 * length, &ss);
-
-    if (*min_period < MinimumPeriod)
-        *min_period = MinimumPeriod;
-
-    if (*def_period < DefaultPeriod)
-        *def_period = DefaultPeriod;
 
     wfx->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
     wfx->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
