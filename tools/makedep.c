@@ -540,6 +540,31 @@ static char *get_relative_path( const char *from, const char *dest )
 
 
 /*******************************************************************
+ *         get_root_relative_path
+ *
+ * Get relative path from obj dir to root.
+ */
+static const char *get_root_relative_path( struct makefile *make )
+{
+    const char *dir = make->obj_dir;
+    char *ret, *p;
+    unsigned int dotdots = 0;
+
+    if (!dir) return ".";
+    while (*dir)
+    {
+        dotdots++;
+        while (*dir && *dir != '/') dir++;
+        while (*dir == '/') dir++;
+    }
+    ret = xmalloc( 3 * dotdots );
+    for (p = ret; dotdots; dotdots--, p += 3) memcpy( p, "../", 3 );
+    p[-1] = 0;  /* remove trailing slash */
+    return ret;
+}
+
+
+/*******************************************************************
  *         concat_paths
  */
 static char *concat_paths( const char *base, const char *path )
@@ -2491,7 +2516,7 @@ static void output_srcdir_symlink( struct makefile *make, const char *obj )
 
     src_name = src_file;
     if (src_name[0] != '/' && make->obj_dir)
-        src_name = concat_paths( get_relative_path( make->obj_dir, "" ), src_name );
+        src_name = concat_paths( get_root_relative_path( make ), src_name );
 
     output_symlink_rule( src_name, dst_file, 0 );
     strarray_add( &make->all_targets[0], obj );
@@ -2639,7 +2664,7 @@ static struct strarray get_removable_dirs( struct strarray files )
 static void output_uninstall_rules( struct makefile *make )
 {
     static const char *dirs_order[] =
-        { "$(includedir)", "$(mandir)", "$(fontdir)", "$(nlsdir)", "$(datadir)", "$(dlldir)" };
+        { "$(includedir)", "$(mandir)", "$(datadir)" };
 
     struct strarray uninstall_dirs;
     unsigned int i, j;
@@ -2962,7 +2987,7 @@ static void output_source_sfd( struct makefile *make, struct incl_file *source, 
     }
     if (source->file->flags & FLAG_INSTALL)
     {
-        add_install_rule( make, source->name, 0, ttf_obj, strmake( "D$(fontdir)/%s", ttf_obj ));
+        add_install_rule( make, source->name, 0, ttf_obj, strmake( "D$(datadir)/wine/fonts/%s", ttf_obj ));
         output_srcdir_symlink( make, ttf_obj );
     }
 
@@ -2980,7 +3005,7 @@ static void output_source_sfd( struct makefile *make, struct incl_file *source, 
                     tools_path( make, "sfnt2fon" ), ttf_file );
             output( "\t%s%s -q -o $@ %s %s\n", cmd_prefix( "GEN" ),
                     tools_path( make, "sfnt2fon" ), ttf_file, args );
-            add_install_rule( make, source->name, 0, xstrdup(font), strmake( "d$(fontdir)/%s", font ));
+            add_install_rule( make, source->name, 0, xstrdup(font), strmake( "d$(datadir)/wine/fonts/%s", font ));
         }
     }
 }
@@ -3017,7 +3042,7 @@ static void output_source_svg( struct makefile *make, struct incl_file *source, 
 static void output_source_nls( struct makefile *make, struct incl_file *source, const char *obj )
 {
     add_install_rule( make, source->name, 0, source->name,
-                      strmake( "D$(nlsdir)/%s", source->name ));
+                      strmake( "D$(datadir)/wine/nls/%s", source->name ));
     output_srcdir_symlink( make, strmake( "%s.nls", obj ));
 }
 
@@ -3358,7 +3383,7 @@ static void output_fake_module( struct makefile *make, const char *spec_file )
     if (make->disabled[arch]) return;
 
     strarray_add( &make->all_targets[arch], name );
-    add_install_rule( make, make->module, arch, name, strmake( "d$(dlldir)/%s", name ));
+    add_install_rule( make, make->module, arch, name, strmake( "d$(libdir)/wine/%s", name ));
 
     output( "%s:", obj_dir_path( make, name ));
     if (spec_file) output_filename( spec_file );
@@ -3435,7 +3460,7 @@ static void output_module( struct makefile *make, unsigned int arch )
     strarray_add( &make->all_targets[link_arch], module_name );
     if (make->data_only)
         add_install_rule( make, make->module, link_arch, module_name,
-                          strmake( "d$(dlldir)/%s%s", arch_pe_dirs[arch], make->module ));
+                          strmake( "d$(libdir)/wine/%s%s", arch_pe_dirs[arch], make->module ));
     else
         add_install_rule( make, make->module, link_arch, module_name,
                           strmake( "%c%s%s%s", '0' + arch, arch_install_dirs[arch], make->module,
@@ -4159,7 +4184,7 @@ static void output_stub_makefile( struct makefile *make )
     output_filenames( targets );
     output_filenames( make->clean_files );
     output( ":\n" );
-    output( "\t@cd %s && $(MAKE) %s/$@\n", get_relative_path( make->obj_dir, "" ), make->obj_dir );
+    output( "\t@cd %s && $(MAKE) %s/$@\n", get_root_relative_path( make ), make->obj_dir );
     output( ".PHONY:" );
     output_filenames( targets );
     output( "\n" );
@@ -4529,7 +4554,7 @@ int main( int argc, char *argv[] )
 
     arch_dirs[0] = "";
     arch_pe_dirs[0] = strmake( "%s-windows/", archs.str[0] );
-    arch_install_dirs[0] = unix_lib_supported ? strmake( "$(dlldir)/%s-unix/", archs.str[0] ) : "$(dlldir)/";
+    arch_install_dirs[0] = unix_lib_supported ? strmake( "$(libdir)/wine/%s-unix/", archs.str[0] ) : "$(libdir)/wine/";
     strip_progs[0] = "\"$(STRIP)\"";
 
     for (arch = 1; arch < archs.count; arch++)
@@ -4539,7 +4564,7 @@ int main( int argc, char *argv[] )
         strarray_add( &target_flags[arch], target );
         arch_dirs[arch] = strmake( "%s-windows/", archs.str[arch] );
         arch_pe_dirs[arch] = arch_dirs[arch];
-        arch_install_dirs[arch] = strmake( "$(dlldir)/%s", arch_dirs[arch] );
+        arch_install_dirs[arch] = strmake( "$(libdir)/wine/%s", arch_dirs[arch] );
         strip_progs[arch] = strmake( "%s-strip", target );
         dll_ext[arch] = "";
     }

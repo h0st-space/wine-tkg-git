@@ -1,7 +1,5 @@
 /*
- * Runtime Classes for windows.applicationmodel.dll
- *
- * Copyright (C) 2023 Mohamad Al-Jaf
+ * Copyright 2024 Zhiyi Zhang for CodeWeavers
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -18,19 +16,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#pragma makedep register
+#ifndef _ROMETADATA_H_
+#define _ROMETADATA_H_
 
-#ifdef __WIDL__
-#pragma winrt ns_prefix
-#endif
+STDAPI MetaDataGetDispenser(REFCLSID rclsid, REFIID riid, VOID **obj);
 
-import "windows.foundation.idl";
-import "windows.storage.idl";
-import "windows.system.idl";
-
-#define DO_NO_IMPORTS
-#define _WINDOWS_APPLICATIONMODEL
-#include "windows.applicationmodel.core.idl"
-#include "windows.applicationmodel.idl"
-#include "windows.applicationmodel.activation.idl"
-#include "windows.applicationmodel.background.idl"
+#endif  /* _ROMETADATA_H_ */

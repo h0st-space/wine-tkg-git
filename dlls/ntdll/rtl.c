@@ -191,7 +191,7 @@ void WINAPI RtlInitializeGenericTable(RTL_GENERIC_TABLE *table, PRTL_GENERIC_COM
 /******************************************************************************
  *  RtlEnumerateGenericTableWithoutSplaying           [NTDLL.@]
  */
-void * WINAPI RtlEnumerateGenericTableWithoutSplaying(RTL_GENERIC_TABLE *table, void *previous)
+void * WINAPI RtlEnumerateGenericTableWithoutSplaying(RTL_GENERIC_TABLE *table, PVOID *previous)
 {
     static int warn_once;
 
@@ -786,6 +786,27 @@ void WINAPI RtlInitializeGenericTableAvl(PRTL_AVL_TABLE table, PRTL_AVL_COMPARE_
                                          PRTL_AVL_ALLOCATE_ROUTINE allocate, PRTL_AVL_FREE_ROUTINE free, void *context)
 {
     FIXME("%p %p %p %p %p: stub\n", table, compare, allocate, free, context);
+}
+
+/******************************************************************************
+ *           RtlEnumerateGenericTableWithoutSplayingAvl  (NTDLL.@)
+ */
+void * WINAPI RtlEnumerateGenericTableWithoutSplayingAvl(RTL_AVL_TABLE *table, PVOID *previous)
+{
+    static int warn_once;
+
+    if (!warn_once++)
+        FIXME("(%p, %p) stub!\n", table, previous);
+    return NULL;
+}
+
+/******************************************************************************
+ *  RtlNumberGenericTableElementsAvl  (NTDLL.@)
+ */
+ULONG WINAPI RtlNumberGenericTableElementsAvl(RTL_AVL_TABLE *table)
+{
+    FIXME("(%p) stub!\n", table);
+    return 0;
 }
 
 /***********************************************************************

@@ -91,9 +91,6 @@ AC_ARG_WITH(wine64,    AS_HELP_STRING([--with-wine64=DIR],[use the 64-bit Wine i
 
 AC_CANONICAL_HOST
 
-AC_SUBST(dlldir,[\${libdir}/wine])
-AC_SUBST(fontdir,[\${datadir}/wine/fonts])
-AC_SUBST(nlsdir,[\${datadir}/wine/nls])
 AC_SUBST(srcdir)
 
 dnl **** Check for some programs ****
@@ -198,7 +195,7 @@ fi
 AC_SUBST(toolsdir,[$wine_cv_toolsdir])
 AC_SUBST(MAKEDEP,[$wine_makedep])
 AC_SUBST(RUNTESTFLAGS,["-q -P wine"])
-AC_SUBST(SED_CMD,["LC_ALL=C sed -e 's,@bindir@,\${bindir},g' -e 's,@dlldir@,\${dlldir},g' -e 's,@PACKAGE_STRING@,$PACKAGE_STRING,g' -e 's,@PACKAGE_VERSION@,$PACKAGE_VERSION,g'"])
+AC_SUBST(SED_CMD,["LC_ALL=C sed -e 's,@bindir@,\${bindir},g' -e 's,@PACKAGE_STRING@,$PACKAGE_STRING,g' -e 's,@PACKAGE_VERSION@,$PACKAGE_VERSION,g'"])
 
 if test -n "$host_alias" -a "$host_alias" != "$build_alias"
 then
@@ -1435,6 +1432,16 @@ fi
 WINE_NOTICE_WITH(pcsclite,[test "x$PCSCLITE_LIBS" = x],
                  [libpcsclite not found, smart cards won't be supported.],
                  [enable_winscard])
+
+dnl **** Check for libodbc ****
+if test "x$with_odbc" != "xno"
+then
+    WINE_PACKAGE_FLAGS(ODBC,[odbc],[-lodbc],,,
+        [AC_CHECK_LIB(odbc,SQLConnect,[:],[ODBC_LIBS=""],[$ODBC_LIBS])])
+fi
+WINE_NOTICE_WITH(odbc,[test "x$ODBC_LIBS" = x],
+                 [libodbc not found, ODBC won't be supported.],
+                 [enable_odbc32])
 
 dnl **** Check for inotify ****
 if test "x$with_inotify" != "xno"
@@ -3071,6 +3078,8 @@ WINE_CONFIG_MAKEFILE(dlls/riched20)
 WINE_CONFIG_MAKEFILE(dlls/riched20/tests)
 WINE_CONFIG_MAKEFILE(dlls/riched32)
 WINE_CONFIG_MAKEFILE(dlls/riched32/tests)
+WINE_CONFIG_MAKEFILE(dlls/rometadata)
+WINE_CONFIG_MAKEFILE(dlls/rometadata/tests)
 WINE_CONFIG_MAKEFILE(dlls/rpcrt4)
 WINE_CONFIG_MAKEFILE(dlls/rpcrt4/tests)
 WINE_CONFIG_MAKEFILE(dlls/rsabase)
@@ -3598,12 +3607,12 @@ test "$wine_binary" = wine || WINE_IGNORE_FILE(loader/wine)
 
 if test "x$enable_tools" != xno
 then
-    WINE_IGNORE_FILE(tools/makedep$ac_exeext)
     AC_CONFIG_COMMANDS([tools/makedep],[wine_fn_output_makedep || AS_EXIT],
 [wine_fn_output_makedep ()
 {
     AS_MKDIR_P(tools)
-    $CC -I${wine_srcdir}tools -Iinclude -I${wine_srcdir}include -D__WINESRC__ -DWINE_UNIX_LIB $EXTRACFLAGS $CPPFLAGS $CFLAGS -o tools/makedep$ac_exeext ${wine_srcdir}tools/makedep.c $LDFLAGS
+    $CC -c -I${wine_srcdir}tools -Iinclude -I${wine_srcdir}include -D__WINESRC__ -DWINE_UNIX_LIB $EXTRACFLAGS $CPPFLAGS $CFLAGS -o tools/makedep.o ${wine_srcdir}tools/makedep.c
+    $CC -o tools/makedep$ac_exeext tools/makedep.o $LDFLAGS
 }])
 fi
 
@@ -3667,18 +3676,6 @@ include/stamp-h.in: configure.ac aclocal.m4
 	@echo timestamp > \$[@]])
 fi
 
-if test "x$enable_tools" != xno
-then
-    WINE_APPEND_RULE(
-[tools/makedep$ac_exeext: ${wine_srcdir}tools/makedep.c include/config.h config.status
-	@./config.status tools/makedep
-Makefile: tools/makedep$ac_exeext])
-else
-    WINE_APPEND_RULE(
-[\$(MAKEDEP):
-	@echo \"You need to run make in $toolsdir first\" && false])
-fi
-
 dnl Rules for wineloader
 
 if test -n "$with_wine64"
@@ -3737,7 +3734,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-9.11.r6.g593249dc\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging Esync Fsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-9.11.r9.g7fc08a96\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging Esync Fsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.nfo:
