@@ -148,6 +148,7 @@ struct msg_queue
     struct hook_table     *hooks;           /* hook table */
     timeout_t              last_get_msg;    /* time of last get message call */
     int                    keystate_lock;   /* owns an input keystate lock */
+    const queue_shm_t     *shared;          /* queue in session shared memory */
     unsigned int           ignore_post_msg; /* ignore post messages newer than this unique id */
     int                    esync_fd;        /* esync file descriptor (signalled on message) */
     int                    esync_in_msgwait; /* our thread is currently waiting on us */
@@ -302,6 +303,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
 {
     struct thread_input *new_input = NULL;
     struct msg_queue *queue;
+    struct desktop *desktop;
     int i;
 
     if (!input)
@@ -339,6 +341,18 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         list_init( &queue->expired_timers );
         for (i = 0; i < NB_MSG_KINDS; i++) list_init( &queue->msg_list[i] );
 
+        if (!(queue->shared = alloc_shared_object()))
+        {
+            release_object( queue );
+            return NULL;
+        }
+
+        SHARED_WRITE_BEGIN( queue->shared, queue_shm_t )
+        {
+            memset( (void *)shared->hooks_count, 0, sizeof(shared->hooks_count) );
+        }
+        SHARED_WRITE_END;
+
         if (do_fsync())
             queue->fsync_idx = fsync_alloc_shm( 0, 0 );
  
@@ -346,6 +360,12 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
             queue->esync_fd = esync_create_fd( 0, 0 );
 
         thread->queue = queue;
+
+        if ((desktop = get_thread_desktop( thread, 0 )))
+        {
+            add_desktop_hook_count( desktop, thread, 1 );
+            release_object( desktop );
+        }
     }
     if (new_input) release_object( new_input );
     return queue;
@@ -627,6 +647,20 @@ void set_queue_hooks( struct thread *thread, struct hook_table *hooks )
     if (!queue && !(queue = create_msg_queue( thread, NULL ))) return;
     if (queue->hooks) release_object( queue->hooks );
     queue->hooks = hooks;
+}
+
+/* update the thread message queue hooks counters */
+void add_queue_hook_count( struct thread *thread, unsigned int index, int count )
+{
+    if (!thread->queue) return;
+
+    SHARED_WRITE_BEGIN( thread->queue->shared, queue_shm_t )
+    {
+        shared->hooks_count[index] += count;
+    }
+    SHARED_WRITE_END;
+
+    assert( thread->queue->shared->hooks_count[index] >= 0 );
 }
 
 /* check the queue status */
@@ -1270,6 +1304,7 @@ static void msg_queue_destroy( struct object *obj )
     release_object( queue->input );
     if (queue->hooks) release_object( queue->hooks );
     if (queue->fd) release_object( queue->fd );
+    if (queue->shared) free_shared_object( queue->shared );
     if (do_esync()) close( queue->esync_fd );
 }
 
@@ -2921,13 +2956,21 @@ DECL_HANDLER(is_window_hung)
 }
 
 
-/* get the message queue of the current thread */
-DECL_HANDLER(get_msg_queue)
+/* get a handle for the current thread message queue */
+DECL_HANDLER(get_msg_queue_handle)
 {
     struct msg_queue *queue = get_current_queue();
 
     reply->handle = 0;
     if (queue) reply->handle = alloc_handle( current->process, queue, SYNCHRONIZE, 0 );
+}
+
+
+/* get the message queue of the current thread */
+DECL_HANDLER(get_msg_queue)
+{
+    struct msg_queue *queue = get_current_queue();
+    if (queue) reply->locator = get_shared_object_locator( queue->shared );
 }
 
 
@@ -3147,8 +3190,6 @@ DECL_HANDLER(get_message)
     struct msg_queue *queue = get_current_queue();
     user_handle_t get_win = get_user_full_handle( req->get_win );
     unsigned int filter = req->flags >> 16;
-
-    reply->active_hooks = get_active_hooks();
 
     if (get_win && get_win != 1 && get_win != -1 && !get_user_object( get_win, USER_WINDOW ))
     {

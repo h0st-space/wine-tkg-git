@@ -272,7 +272,7 @@ void wayland_shm_buffer_unref(struct wayland_shm_buffer *shm_buffer);
  *          Wayland window surface
  */
 
-void wayland_window_surface_update_wayland_surface(struct window_surface *surface,
+void wayland_window_surface_update_wayland_surface(struct window_surface *surface, const RECT *visible_rect,
                                                    struct wayland_surface *wayland_surface);
 void wayland_window_flush(HWND hwnd);
 
@@ -361,7 +361,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, UINT swp_flags,
                               const RECT *visible_rect, const RECT *valid_rects,
                               struct window_surface *surface);
 BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, const RECT *window_rect, const RECT *client_rect, RECT *visible_rect);
-BOOL WAYLAND_CreateWindowSurface(HWND hwnd, UINT swp_flags, const RECT *visible_rect, struct window_surface **surface);
+BOOL WAYLAND_CreateWindowSurface(HWND hwnd, const RECT *surface_rect, struct window_surface **surface);
 UINT WAYLAND_VulkanInit(UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs);
 struct opengl_funcs *WAYLAND_wine_get_wgl_driver(UINT version);
 

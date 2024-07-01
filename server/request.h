@@ -231,6 +231,7 @@ DECL_HANDLER(add_atom);
 DECL_HANDLER(delete_atom);
 DECL_HANDLER(find_atom);
 DECL_HANDLER(get_atom_information);
+DECL_HANDLER(get_msg_queue_handle);
 DECL_HANDLER(get_msg_queue);
 DECL_HANDLER(set_queue_fd);
 DECL_HANDLER(set_queue_mask);
@@ -534,6 +535,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_delete_atom,
     (req_handler)req_find_atom,
     (req_handler)req_get_atom_information,
+    (req_handler)req_get_msg_queue_handle,
     (req_handler)req_get_msg_queue,
     (req_handler)req_set_queue_fd,
     (req_handler)req_set_queue_mask,
@@ -1398,9 +1400,12 @@ C_ASSERT( FIELD_OFFSET(struct get_atom_information_reply, count) == 8 );
 C_ASSERT( FIELD_OFFSET(struct get_atom_information_reply, pinned) == 12 );
 C_ASSERT( FIELD_OFFSET(struct get_atom_information_reply, total) == 16 );
 C_ASSERT( sizeof(struct get_atom_information_reply) == 24 );
+C_ASSERT( sizeof(struct get_msg_queue_handle_request) == 16 );
+C_ASSERT( FIELD_OFFSET(struct get_msg_queue_handle_reply, handle) == 8 );
+C_ASSERT( sizeof(struct get_msg_queue_handle_reply) == 16 );
 C_ASSERT( sizeof(struct get_msg_queue_request) == 16 );
-C_ASSERT( FIELD_OFFSET(struct get_msg_queue_reply, handle) == 8 );
-C_ASSERT( sizeof(struct get_msg_queue_reply) == 16 );
+C_ASSERT( FIELD_OFFSET(struct get_msg_queue_reply, locator) == 8 );
+C_ASSERT( sizeof(struct get_msg_queue_reply) == 24 );
 C_ASSERT( FIELD_OFFSET(struct set_queue_fd_request, handle) == 12 );
 C_ASSERT( sizeof(struct set_queue_fd_request) == 16 );
 C_ASSERT( FIELD_OFFSET(struct set_queue_mask_request, wake_mask) == 12 );
@@ -1457,8 +1462,7 @@ C_ASSERT( FIELD_OFFSET(struct get_message_reply, type) == 32 );
 C_ASSERT( FIELD_OFFSET(struct get_message_reply, x) == 36 );
 C_ASSERT( FIELD_OFFSET(struct get_message_reply, y) == 40 );
 C_ASSERT( FIELD_OFFSET(struct get_message_reply, time) == 44 );
-C_ASSERT( FIELD_OFFSET(struct get_message_reply, active_hooks) == 48 );
-C_ASSERT( FIELD_OFFSET(struct get_message_reply, total) == 52 );
+C_ASSERT( FIELD_OFFSET(struct get_message_reply, total) == 48 );
 C_ASSERT( sizeof(struct get_message_reply) == 56 );
 C_ASSERT( FIELD_OFFSET(struct reply_message_request, remove) == 12 );
 C_ASSERT( FIELD_OFFSET(struct reply_message_request, result) == 16 );
@@ -1892,14 +1896,12 @@ C_ASSERT( FIELD_OFFSET(struct set_hook_request, flags) == 40 );
 C_ASSERT( FIELD_OFFSET(struct set_hook_request, unicode) == 44 );
 C_ASSERT( sizeof(struct set_hook_request) == 48 );
 C_ASSERT( FIELD_OFFSET(struct set_hook_reply, handle) == 8 );
-C_ASSERT( FIELD_OFFSET(struct set_hook_reply, active_hooks) == 12 );
 C_ASSERT( sizeof(struct set_hook_reply) == 16 );
 C_ASSERT( FIELD_OFFSET(struct remove_hook_request, handle) == 12 );
 C_ASSERT( FIELD_OFFSET(struct remove_hook_request, proc) == 16 );
 C_ASSERT( FIELD_OFFSET(struct remove_hook_request, id) == 24 );
 C_ASSERT( sizeof(struct remove_hook_request) == 32 );
-C_ASSERT( FIELD_OFFSET(struct remove_hook_reply, active_hooks) == 8 );
-C_ASSERT( sizeof(struct remove_hook_reply) == 16 );
+C_ASSERT( sizeof(struct remove_hook_reply) == 8 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_request, id) == 12 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_request, event) == 16 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_request, window) == 20 );
@@ -1911,8 +1913,7 @@ C_ASSERT( FIELD_OFFSET(struct start_hook_chain_reply, pid) == 12 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_reply, tid) == 16 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_reply, unicode) == 20 );
 C_ASSERT( FIELD_OFFSET(struct start_hook_chain_reply, proc) == 24 );
-C_ASSERT( FIELD_OFFSET(struct start_hook_chain_reply, active_hooks) == 32 );
-C_ASSERT( sizeof(struct start_hook_chain_reply) == 40 );
+C_ASSERT( sizeof(struct start_hook_chain_reply) == 32 );
 C_ASSERT( FIELD_OFFSET(struct finish_hook_chain_request, id) == 12 );
 C_ASSERT( sizeof(struct finish_hook_chain_request) == 16 );
 C_ASSERT( FIELD_OFFSET(struct get_hook_info_request, handle) == 12 );

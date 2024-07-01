@@ -1,9 +1,9 @@
-# Last wine-tkg-staging-fsync-git configuration - Wed Jun 26 05:29:06 PM CEST 2024 :
+# Last wine-tkg-staging-fsync-git configuration - Mon Jul  1 09:38:18 AM CEST 2024 :
 
 Local cfg files used
 
-Wine (plain) version: 9.11.r186.gf9af971bd7d
-Using wine-staging patchset (version 9.11.r9.g7fc08a96)
+Wine (plain) version: 9.12.r0.gb87f35898d2
+Using wine-staging patchset (version 9.12.r0.g79dd2358)
 
 Disabled the local Esync patchset to use Staging impl instead.
 Not using vkd3d native library for d3d12 translation (allows using vkd3d-proton)
@@ -21,7 +21,6 @@ fsync-unix-staging.patch -- ( Applied fsync patches (unix, staging) )
 fsync_futex_waitv.patch -- ( Applied patches for fsync to support futex_waitv )
 
 childwindow-proton.patch -- ( Applied child window for vk patch )
-nvidia-hate.patch -- ( Hatin' on novideo )
 LAA-unix-staging.patch -- ( Applied large address aware override support (legacy) )
 
 proton-sdl-joy.patch -- ( Enable SDL Joystick support (from Proton) )

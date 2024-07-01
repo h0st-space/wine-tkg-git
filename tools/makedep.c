@@ -240,16 +240,27 @@ static const char *output_makefile_name = "Makefile";
 static const char *input_file_name;
 static const char *output_file_name;
 static const char *temp_file_name;
-static int relative_dir_mode;
+static int compile_commands_mode;
 static int silent_rules;
 static int input_line;
 static int output_column;
 static FILE *output_file;
 
+struct compile_command
+{
+    struct list      entry;
+    const char      *cmd;
+    const char      *source;
+    const char      *obj;
+    struct strarray args;
+};
+
+static struct list compile_commands = LIST_INIT( compile_commands );
+
 static const char Usage[] =
-    "Usage: makedep [options] [directories]\n"
+    "Usage: makedep [options]\n"
     "Options:\n"
-    "   -R from to  Compute the relative path between two directories\n"
+    "   -C          Generate compile_commands.json along with the makefile\n"
     "   -S          Generate Automake-style silent rules\n"
     "   -fxxx       Store output in file 'xxx' (default: Makefile)\n";
 
@@ -494,52 +505,6 @@ static char *replace_substr( const char *str, const char *start, size_t len, con
 
 
 /*******************************************************************
- *         get_relative_path
- *
- * Determine where the destination path is located relative to the 'from' path.
- */
-static char *get_relative_path( const char *from, const char *dest )
-{
-    const char *start;
-    char *ret, *p;
-    unsigned int dotdots = 0;
-
-    /* a path of "." is equivalent to an empty path */
-    if (!strcmp( from, "." )) from = "";
-
-    for (;;)
-    {
-        while (*from == '/') from++;
-        while (*dest == '/') dest++;
-        start = dest;  /* save start of next path element */
-        if (!*from) break;
-
-        while (*from && *from != '/' && *from == *dest) { from++; dest++; }
-        if ((!*from || *from == '/') && (!*dest || *dest == '/')) continue;
-
-        /* count remaining elements in 'from' */
-        do
-        {
-            dotdots++;
-            while (*from && *from != '/') from++;
-            while (*from == '/') from++;
-        }
-        while (*from);
-        break;
-    }
-
-    if (!start[0] && !dotdots) return NULL;  /* empty path */
-
-    ret = xmalloc( 3 * dotdots + strlen( start ) + 1 );
-    for (p = ret; dotdots; dotdots--, p += 3) memcpy( p, "../", 3 );
-
-    if (start[0]) strcpy( p, start );
-    else p[-1] = 0;  /* remove trailing slash */
-    return ret;
-}
-
-
-/*******************************************************************
  *         get_root_relative_path
  *
  * Get relative path from obj dir to root.
@@ -596,6 +561,26 @@ static char *concat_paths( const char *base, const char *path )
     memcpy( ret, base, len );
     ret[len++] = '/';
     strcpy( ret + len, path );
+    return ret;
+}
+
+
+/*******************************************************************
+ *         escape_cstring
+ */
+static const char *escape_cstring( const char *str )
+{
+    char *ret;
+    unsigned int i = 0, j = 0;
+
+    if (!strpbrk( str, "\\\"" )) return str;
+    ret = xmalloc( 2 * strlen(str) + 1 );
+    while (str[i])
+    {
+        if (str[i] == '\\' || str[i] == '"') ret[j++] = '\\';
+        ret[j++] = str[i++];
+    }
+    ret[j] = 0;
     return ret;
 }
 
@@ -3214,7 +3199,7 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
                                     unsigned int arch )
 {
     const char *obj_name, *var_cc, *var_cflags;
-    struct strarray arch_cflags = empty_strarray;
+    struct strarray cflags = empty_strarray;
 
     if (make->disabled[arch] && !(source->file->flags & FLAG_C_IMPLIB)) return;
 
@@ -3245,46 +3230,46 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
     else
         strarray_add( &make->clean_files, obj_name );
 
+    if (!source->use_msvcrt) strarray_addall( &cflags, make->unix_cflags );
     if ((source->file->flags & FLAG_ARM64EC_X64) && !strcmp( archs.str[arch], "arm64ec" ))
     {
         var_cc     = "$(x86_64_CC)";
         var_cflags = "$(x86_64_CFLAGS)";
-        strarray_add( &arch_cflags, "-D__arm64ec_x64__" );
-        strarray_addall( &arch_cflags, get_expanded_make_var_array( top_makefile, "x86_64_EXTRACFLAGS" ));
+        strarray_add( &cflags, "-D__arm64ec_x64__" );
+        strarray_addall( &cflags, get_expanded_make_var_array( top_makefile, "x86_64_EXTRACFLAGS" ));
     }
     else
     {
         var_cc     = arch_make_variable( "CC", arch );
         var_cflags = arch_make_variable( "CFLAGS", arch );
-        strarray_addall( &arch_cflags, make->extlib ? extra_cflags_extlib[arch] : extra_cflags[arch] );
+        strarray_addall( &cflags, make->extlib ? extra_cflags_extlib[arch] : extra_cflags[arch] );
     }
-
-    output( "%s: %s\n", obj_dir_path( make, obj_name ), source->filename );
-    output( "\t%s%s -c -o $@ %s", cmd_prefix( "CC" ), var_cc, source->filename );
-    output_filenames( defines );
-    if (!source->use_msvcrt) output_filenames( make->unix_cflags );
-    output_filenames( arch_cflags );
 
     if (!arch)
     {
         if (source->file->flags & FLAG_C_UNIX)
         {
-            output_filenames( unix_dllflags );
+            strarray_addall( &cflags, unix_dllflags );
         }
         else if (make->module || make->testdll)
         {
-            output_filenames( dll_flags );
-            if (source->use_msvcrt) output_filenames( msvcrt_flags );
+            strarray_addall( &cflags, dll_flags );
+            if (source->use_msvcrt) strarray_addall( &cflags, msvcrt_flags );
             if (!unix_lib_supported && make->module && is_crt_module( make->module ))
-                output_filename( "-fno-builtin" );
+                strarray_add( &cflags, "-fno-builtin" );
         }
     }
     else
     {
-        if (make->module && is_crt_module( make->module )) output_filename( "-fno-builtin" );
+        if (make->module && is_crt_module( make->module )) strarray_add( &cflags, "-fno-builtin" );
     }
 
-    output_filenames( cpp_flags );
+    strarray_addall( &cflags, cpp_flags );
+
+    output( "%s: %s\n", obj_dir_path( make, obj_name ), source->filename );
+    output( "\t%s%s -c -o $@ %s", cmd_prefix( "CC" ), var_cc, source->filename );
+    output_filenames( defines );
+    output_filenames( cflags );
     output_filename( var_cflags );
     output( "\n" );
 
@@ -3301,6 +3286,29 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
                 cmd_prefix( "TEST" ),
                 root_src_dir_path( "tools/runtest" ), make->testdll,
                 obj_dir_path( make, arch_module_name( test_exe, arch )), obj );
+    }
+
+    if (!(source->file->flags & FLAG_GENERATED))
+    {
+        struct compile_command *cmd = malloc( sizeof(*cmd) );
+
+        cmd->source = source->filename;
+        cmd->obj = obj_dir_path( make, obj_name );
+        cmd->args = empty_strarray;
+        strarray_addall( &cmd->args, defines );
+        strarray_addall( &cmd->args, cflags );
+
+        if ((source->file->flags & FLAG_ARM64EC_X64) && !strcmp( archs.str[arch], "arm64ec" ))
+        {
+            cmd->cmd = get_expanded_make_variable( make, "x86_64_CC" );
+            strarray_add( &cmd->args, get_expanded_make_variable( make, "x86_64_CFLAGS" ));
+        }
+        else
+        {
+            cmd->cmd = get_expanded_arch_var( make, "CC", arch );
+            strarray_add( &cmd->args, get_expanded_arch_var( make, "CFLAGS", arch ));
+        }
+        list_add_tail( &compile_commands, &cmd->entry );
     }
 }
 
@@ -4092,6 +4100,41 @@ static void output_linguas( const struct makefile *make )
 
 
 /*******************************************************************
+ *         output_compile_commands
+ */
+static void output_compile_commands( const char *dest )
+{
+    struct compile_command *cmd;
+    unsigned int i;
+    const char *dir;
+    char buffer[PATH_MAX];
+
+    output_file = create_temp_file( dest );
+
+    getcwd( buffer, sizeof(buffer) );
+    dir = escape_cstring( buffer );
+
+    output( "[\n" );
+    LIST_FOR_EACH_ENTRY( cmd, &compile_commands, struct compile_command, entry )
+    {
+        output( "  {\n" );
+        output( "    \"command\": \"%s -c -o %s %s", cmd->cmd, cmd->obj, cmd->source );
+        for (i = 0; i < cmd->args.count; i++) output( " %s", escape_cstring( cmd->args.str[i] ));
+        output( "\",\n" );
+        output( "    \"file\": \"%s\",\n", cmd->source );
+        output( "    \"output\": \"%s\",\n", cmd->obj );
+        output( "    \"directory\": \"%s\"\n", dir );
+        output( "  }%s\n", list_next( &compile_commands, &cmd->entry ) ? "," : "" );
+    }
+    output( "]\n" );
+
+    if (fclose( output_file )) fatal_perror( "write" );
+    output_file = NULL;
+    rename_temp_file( dest );
+}
+
+
+/*******************************************************************
  *         output_testlist
  */
 static void output_testlist( const struct makefile *make )
@@ -4237,6 +4280,7 @@ static void output_top_makefile( struct makefile *make )
     FILE *src_file;
     unsigned int i;
     int found = 0;
+    const char *makedep;
 
     output_file_name = obj_dir_path( make, output_makefile_name );
     output_file = create_temp_file( output_file_name );
@@ -4254,10 +4298,22 @@ static void output_top_makefile( struct makefile *make )
     if (!found) output( "\n%s (everything below this line is auto-generated; DO NOT EDIT!!)\n", separator );
 
     if (silent_rules) output_silent_rules();
+
+    /* add special targets for makefile and dependencies */
+
+    output( ".INIT: Makefile\n" );
+    output( ".MAKEFILEDEPS:\n" );
+    output( ".SUFFIXES:\n" );
+    makedep = strmake( "%s%s",tools_dir_path( make, "makedep" ), tools_ext );
+    output( "Makefile: %s\n", makedep );
+    output( "depend: %s\n", makedep );
+    output( "\t%s%s%s\n", makedep,
+            compile_commands_mode ? " -C" : "",
+            silent_rules ? " -S" : "" );
+    strarray_add( &make->phony_targets, "depend" );
+
     for (i = 0; i < subdirs.count; i++) output_sources( submakes[i] );
     output_sources( make );
-    /* disable implicit rules */
-    output( ".SUFFIXES:\n" );
 
     fclose( output_file );
     output_file = NULL;
@@ -4432,8 +4488,8 @@ static int parse_option( const char *opt )
     case 'f':
         if (opt[2]) output_makefile_name = opt + 2;
         break;
-    case 'R':
-        relative_dir_mode = 1;
+    case 'C':
+        compile_commands_mode = 1;
         break;
     case 'S':
         silent_rules = 1;
@@ -4479,21 +4535,11 @@ int main( int argc, char *argv[] )
         else i++;
     }
 
-    if (relative_dir_mode)
+    if (argc > 1)
     {
-        char *relpath;
-
-        if (argc != 3)
-        {
-            fprintf( stderr, "Option -R needs two directories\n%s", Usage );
-            exit( 1 );
-        }
-        relpath = get_relative_path( argv[1], argv[2] );
-        printf( "%s\n", relpath ? relpath : "." );
-        exit( 0 );
+        fprintf( stderr, "Unknown argument '%s'\n%s", argv[1], Usage );
+        exit(1);
     }
-
-    if (argc > 1) fatal_error( "Directory arguments not supported in this mode\n" );
 
     atexit( cleanup_files );
     init_signals( exit_on_signal );
@@ -4598,6 +4644,8 @@ int main( int argc, char *argv[] )
 
     output_dependencies( top_makefile );
     for (i = 0; i < subdirs.count; i++) output_dependencies( submakes[i] );
+
+    if (compile_commands_mode) output_compile_commands( "compile_commands.json" );
 
     return 0;
 }

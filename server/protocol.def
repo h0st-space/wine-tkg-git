@@ -913,9 +913,15 @@ typedef volatile struct
     unsigned char        keystate[256];    /* asynchronous key state */
 } desktop_shm_t;
 
+typedef volatile struct
+{
+    int                  hooks_count[WH_MAX - WH_MIN + 2]; /* active hooks count */
+} queue_shm_t;
+
 typedef volatile union
 {
     desktop_shm_t        desktop;
+    queue_shm_t          queue;
 } object_shm_t;
 
 typedef volatile struct
@@ -2130,10 +2136,17 @@ enum prefix_type
 @END
 
 
+/* Get a handle for the current thread message queue */
+@REQ(get_msg_queue_handle)
+@REPLY
+    obj_handle_t handle;       /* handle to the queue */
+@END
+
+
 /* Get the message queue of the current thread */
 @REQ(get_msg_queue)
 @REPLY
-    obj_handle_t handle;       /* handle to the queue */
+    obj_locator_t  locator;    /* locator for the shared session object */
 @END
 
 
@@ -2238,7 +2251,6 @@ enum message_type
     int             x;         /* message x position */
     int             y;         /* message y position */
     unsigned int    time;      /* message time */
-    unsigned int    active_hooks; /* active hooks bitmap */
     data_size_t     total;     /* total size of extra data */
     VARARG(data,message_data); /* message data for sent messages */
 @END
@@ -3049,7 +3061,6 @@ enum caret_state
     VARARG(module,unicode_str);    /* module name */
 @REPLY
     user_handle_t  handle;         /* handle to the hook */
-    unsigned int   active_hooks;   /* active hooks bitmap */
 @END
 
 
@@ -3059,7 +3070,6 @@ enum caret_state
     client_ptr_t   proc;           /* hook procedure if handle is 0 */
     int            id;             /* id of the hook if handle is 0 */
 @REPLY
-    unsigned int   active_hooks;   /* active hooks bitmap */
 @END
 
 
@@ -3076,7 +3086,6 @@ enum caret_state
     thread_id_t    tid;            /* thread id for low-level keyboard/mouse hooks */
     int            unicode;        /* is it a unicode hook? */
     client_ptr_t   proc;           /* hook procedure */
-    unsigned int   active_hooks;   /* active hooks bitmap */
     VARARG(module,unicode_str);    /* module name */
 @END
 

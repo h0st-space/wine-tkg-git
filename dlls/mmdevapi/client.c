@@ -21,6 +21,9 @@
 
 #define COBJMACROS
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+
 #include <wchar.h>
 
 #include <audiopolicy.h>
@@ -390,9 +393,6 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
         return E_INVALIDARG;
     }
 
-    if (FAILED(params.result = adjust_timing(client, force_def_period, &duration, &period, mode, flags, fmt)))
-        return params.result;
-
     sessions_lock();
 
     if (client->stream) {
@@ -401,6 +401,43 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
     }
 
     if (FAILED(params.result = main_loop_start())) {
+        sessions_unlock();
+        return params.result;
+    }
+
+    if (flags & AUDCLNT_STREAMFLAGS_LOOPBACK) {
+        struct get_loopback_capture_device_params params;
+
+        if (client->dataflow != eRender) {
+            sessions_unlock();
+            return AUDCLNT_E_WRONG_ENDPOINT_TYPE;
+        }
+
+        params.device = client->device_name;
+        params.name = name = get_application_name();
+        params.ret_device_len = 0;
+        params.ret_device = NULL;
+        params.result = E_NOTIMPL;
+        wine_unix_call(get_loopback_capture_device, &params);
+        while (params.result == STATUS_BUFFER_TOO_SMALL) {
+            free(params.ret_device);
+            params.ret_device = malloc(params.ret_device_len);
+            wine_unix_call(get_loopback_capture_device, &params);
+        }
+        free(name);
+        if (FAILED(params.result)) {
+            sessions_unlock();
+            free(params.ret_device);
+            if (params.result == E_NOTIMPL)
+                FIXME("get_loopback_capture_device is not supported by backend.\n");
+            return params.result;
+        }
+        free(client->device_name);
+        client->device_name = params.ret_device;
+        client->dataflow = eCapture;
+    }
+
+    if (FAILED(params.result = adjust_timing(client, force_def_period, &duration, &period, mode, flags, fmt))) {
         sessions_unlock();
         return params.result;
     }
@@ -623,6 +660,7 @@ static ULONG WINAPI client_Release(IAudioClient3 *iface)
         if (This->stream)
             stream_release(This->stream, This->timer_thread);
 
+        free(This->device_name);
         free(This);
     }
 
@@ -1492,7 +1530,6 @@ HRESULT AudioClient_Create(GUID *guid, IMMDevice *device, IAudioClient **out)
     struct audio_client *This;
     char *name;
     EDataFlow dataflow;
-    size_t size;
     HRESULT hr;
 
     TRACE("%s %p %p\n", debugstr_guid(guid), device, out);
@@ -1507,15 +1544,13 @@ HRESULT AudioClient_Create(GUID *guid, IMMDevice *device, IAudioClient **out)
         return E_UNEXPECTED;
     }
 
-    size = strlen(name) + 1;
-    This = calloc(1, FIELD_OFFSET(struct audio_client, device_name[size]));
+    This = calloc(1, sizeof(*This));
     if (!This) {
         free(name);
         return E_OUTOFMEMORY;
     }
 
-    memcpy(This->device_name, name, size);
-    free(name);
+    This->device_name = name;
 
     This->IAudioCaptureClient_iface.lpVtbl = &AudioCaptureClient_Vtbl;
     This->IAudioClient3_iface.lpVtbl       = &AudioClient3_Vtbl;
@@ -1529,6 +1564,7 @@ HRESULT AudioClient_Create(GUID *guid, IMMDevice *device, IAudioClient **out)
 
     hr = CoCreateFreeThreadedMarshaler((IUnknown *)&This->IAudioClient3_iface, &This->marshal);
     if (FAILED(hr)) {
+        free(This->device_name);
         free(This);
         return hr;
     }

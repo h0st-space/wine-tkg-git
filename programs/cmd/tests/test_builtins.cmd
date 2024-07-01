@@ -451,14 +451,23 @@ if 1==0 (echo p1) else echo p2||echo p3
 echo ---
 if 1==0 (echo q1) else echo q2&echo q3
 echo ------------- Testing internal commands return codes
-call :setError 0 &&echo SUCCESS||echo FAILURE %errorlevel%
-call :setError 33 &&echo SUCCESS||echo FAILURE %errorlevel%
-call :setError 666
-echo foo &&echo SUCCESS||echo FAILURE %errorlevel%
-echo foo >> h:\i\dont\exist\at\all.txt &&echo SUCCESS||echo FAILURE %errorlevel%
-type NUL &&echo SUCCESS||echo FAILURE %errorlevel%
-type h:\i\dont\exist\at\all.txt &&echo SUCCESS||echo FAILURE %errorlevel%
+setlocal EnableDelayedExpansion
+
+echo --- call and IF/FOR blocks
+call :setError 0 &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!
+call :setError 33 &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!
+call :setError 666 & (echo foo &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & (echo foo >> h:\i\dont\exist\at\all.txt &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((if 1==1 echo "">NUL) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((if 1==0 echo "">NUL) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((if 1==1 (call :setError 33)) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((if 1==0 (call :setError 33) else call :setError 34) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((for %%i in () do echo "") &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((for %%i in () do call :setError 33) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((for %%i in (a) do call :setError 0) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
+call :setError 666 & ((for %%i in (a) do call :setError 33) &&echo SUCCESS !errorlevel!||echo FAILURE !errorlevel!)
 echo ---
+setlocal DisableDelayedExpansion
 echo ------------ Testing 'set' ------------
 call :setError 0
 rem Remove any WINE_FOO* WINE_BA* environment variables from shell before proceeding
@@ -1458,7 +1467,6 @@ for %%a in ("f"
 "g"
 "h"
 ) do if #==# (echo %%a)
-echo ---
 
 mkdir foobar & cd foobar
 mkdir foo
@@ -2794,6 +2802,27 @@ call if 1==1 (
   echo ... and else!
 )
 call call call echo passed
+set WINE_FOO=WINE_BAR
+set WINE_BAR=abc
+call echo %%%WINE_FOO%%%
+call cmd.exe /c echo %%%WINE_FOO%%%
+call echo %%%%%WINE_FOO%%%%%
+call cmd.exe /c echo %%%%%WINE_FOO%%%%%
+
+set WINE_BAR=abc
+set WINE_FOO=%%WINE_BAR%%
+
+call :call_expand %WINE_FOO% %%WINE_FOO%% %%%WINE_FOO%%%
+goto :call_expand_done
+
+:call_expand
+set WINE_BAR=def
+echo %1 %2 %3
+call echo %1 %2 %3
+exit /b 0
+
+:call_expand_done
+
 cd .. & rd /s/q foobar
 
 echo --- mixing batch and builtins

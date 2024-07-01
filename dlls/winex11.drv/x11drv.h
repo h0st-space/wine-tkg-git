@@ -247,7 +247,7 @@ extern void X11DRV_UpdateLayeredWindow( HWND hwnd, const RECT *window_rect, COLO
                                         BYTE alpha, UINT flags );
 extern LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
 extern BOOL X11DRV_WindowPosChanging( HWND hwnd, UINT swp_flags, const RECT *window_rect, const RECT *client_rect, RECT *visible_rect );
-extern BOOL X11DRV_CreateWindowSurface( HWND hwnd, UINT swp_flags, const RECT *visible_rect, struct window_surface **surface );
+extern BOOL X11DRV_CreateWindowSurface( HWND hwnd, const RECT *surface_rect, struct window_surface **surface );
 extern void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags,
                                      const RECT *rectWindow, const RECT *rectClient,
                                      const RECT *visible_rect, const RECT *valid_rects,
@@ -268,7 +268,6 @@ extern Pixmap create_pixmap_from_image( HDC hdc, const XVisualInfo *vis, const B
                                         const struct gdi_image_bits *bits, UINT coloruse );
 extern DWORD get_pixmap_image( Pixmap pixmap, int width, int height, const XVisualInfo *vis,
                                BITMAPINFO *info, struct gdi_image_bits *bits );
-extern void set_surface_color_key( struct window_surface *window_surface, COLORREF color_key );
 extern HRGN expose_surface( struct window_surface *window_surface, const RECT *rect );
 
 extern RGNDATA *X11DRV_GetRegionData( HRGN hrgn, HDC hdc_lptodp );
@@ -694,7 +693,6 @@ typedef int (*x11drv_error_callback)( Display *display, XErrorEvent *event, void
 
 extern void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void *arg );
 extern int X11DRV_check_error(void);
-extern BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect );
 extern void X11DRV_X_to_window_rect( struct x11drv_win_data *data, RECT *rect, int x, int y, int cx, int cy );
 extern POINT virtual_screen_to_root( INT x, INT y );
 extern POINT root_to_virtual_screen( INT x, INT y );

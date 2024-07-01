@@ -2485,7 +2485,6 @@ static NTSTATUS get_mountmgr_fs_info( HANDLE handle, int fd, struct mountmgr_uni
     OBJECT_ATTRIBUTES attr;
     UNICODE_STRING string;
     char *unix_name;
-    IO_STATUS_BLOCK io = {{0}};
     HANDLE mountmgr;
     unsigned int status;
     int letter;
@@ -2511,8 +2510,7 @@ static NTSTATUS get_mountmgr_fs_info( HANDLE handle, int fd, struct mountmgr_uni
                                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_SYNCHRONOUS_IO_NONALERT );
     if (status) return status;
 
-    status = NtDeviceIoControlFile( mountmgr, NULL, NULL, NULL, &io, IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE,
-                                    drive, sizeof(*drive), drive, size );
+    status = sync_ioctl( mountmgr, IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE, drive, sizeof(*drive), drive, size );
     NtClose( mountmgr );
     if (status == STATUS_BUFFER_OVERFLOW) status = STATUS_SUCCESS;
     else if (status) WARN("failed to retrieve filesystem type from mountmgr, status %#x\n", status);
@@ -6309,6 +6307,22 @@ static BOOL async_write_proc( void *user, ULONG_PTR *info, unsigned int *status 
     return TRUE;
 }
 
+static void set_sync_iosb( IO_STATUS_BLOCK *io, NTSTATUS status, ULONG_PTR info, unsigned int options )
+{
+    if (in_wow64_call() && !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)))
+    {
+        IO_STATUS_BLOCK32 *io32 = io->Pointer;
+
+        io32->Status = status;
+        io32->Information = info;
+    }
+    else
+    {
+        io->Status = status;
+        io->Information = info;
+    }
+}
+
 /* do a read call through the server */
 static unsigned int server_read_file( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_context,
                                       IO_STATUS_BLOCK *io, void *buffer, ULONG size,
@@ -6334,10 +6348,7 @@ static unsigned int server_read_file( HANDLE handle, HANDLE event, PIO_APC_ROUTI
         wait_handle = wine_server_ptr_handle( reply->wait );
         options     = reply->options;
         if (wait_handle && status != STATUS_PENDING)
-        {
-            io->Status      = status;
-            io->Information = wine_server_reply_size( reply );
-        }
+            set_sync_iosb( io, status, wine_server_reply_size( reply ), options );
     }
     SERVER_END_REQ;
 
@@ -6372,10 +6383,7 @@ static unsigned int server_write_file( HANDLE handle, HANDLE event, PIO_APC_ROUT
         wait_handle = wine_server_ptr_handle( reply->wait );
         options     = reply->options;
         if (wait_handle && status != STATUS_PENDING)
-        {
-            io->Status      = status;
-            io->Information = reply->size;
-        }
+            set_sync_iosb( io, status, reply->size, options );
     }
     SERVER_END_REQ;
 
@@ -6413,10 +6421,7 @@ static NTSTATUS server_ioctl_file( HANDLE handle, HANDLE event,
         wait_handle = wine_server_ptr_handle( reply->wait );
         options     = reply->options;
         if (wait_handle && status != STATUS_PENDING)
-        {
-            io->Status      = status;
-            io->Information = wine_server_reply_size( reply );
-        }
+            set_sync_iosb( io, status, wine_server_reply_size( reply ), options );
     }
     SERVER_END_REQ;
 
@@ -6442,8 +6447,6 @@ struct io_timeouts
 static unsigned int get_io_timeouts( HANDLE handle, enum server_fd_type type, ULONG count, BOOL is_read,
                                      struct io_timeouts *timeouts )
 {
-    unsigned int status = STATUS_SUCCESS;
-
     timeouts->interval = timeouts->total = -1;
 
     switch(type)
@@ -6452,11 +6455,9 @@ static unsigned int get_io_timeouts( HANDLE handle, enum server_fd_type type, UL
     {
         /* GetCommTimeouts */
         SERIAL_TIMEOUTS st;
-        IO_STATUS_BLOCK io = {{0}};
 
-        status = NtDeviceIoControlFile( handle, NULL, NULL, NULL, &io,
-                                        IOCTL_SERIAL_GET_TIMEOUTS, NULL, 0, &st, sizeof(st) );
-        if (status) break;
+        if (sync_ioctl( handle, IOCTL_SERIAL_GET_TIMEOUTS, NULL, 0, &st, sizeof(st) ))
+            break;
 
         if (is_read)
         {
@@ -6491,8 +6492,7 @@ static unsigned int get_io_timeouts( HANDLE handle, enum server_fd_type type, UL
             {
                 req->handle = wine_server_obj_handle( handle );
                 req->flags = 0;
-                if (!(status = wine_server_call( req )) &&
-                    reply->read_timeout != TIMEOUT_INFINITE)
+                if (!wine_server_call( req ) && reply->read_timeout != TIMEOUT_INFINITE)
                     timeouts->total = reply->read_timeout / -10000;
             }
             SERVER_END_REQ;
@@ -6539,14 +6539,13 @@ static NTSTATUS get_io_avail_mode( HANDLE handle, enum server_fd_type type, BOOL
     {
         /* GetCommTimeouts */
         SERIAL_TIMEOUTS st;
-        IO_STATUS_BLOCK io = {{0}};
 
-        status = NtDeviceIoControlFile( handle, NULL, NULL, NULL, &io,
-                                        IOCTL_SERIAL_GET_TIMEOUTS, NULL, 0, &st, sizeof(st) );
-        if (status) break;
-        *avail_mode = (!st.ReadTotalTimeoutMultiplier &&
-                       !st.ReadTotalTimeoutConstant &&
-                       st.ReadIntervalTimeout == MAXDWORD);
+        if (!(status = sync_ioctl( handle, IOCTL_SERIAL_GET_TIMEOUTS, NULL, 0, &st, sizeof(st) )))
+        {
+            *avail_mode = (!st.ReadTotalTimeoutMultiplier &&
+                           !st.ReadTotalTimeoutConstant &&
+                           st.ReadIntervalTimeout == MAXDWORD);
+        }
         break;
     }
     case FD_TYPE_MAILSLOT:
@@ -6605,14 +6604,41 @@ static void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULO
     SERVER_END_REQ;
 }
 
+/* notify direct completion of async and close the wait handle if it is no longer needed */
+void set_async_direct_result( HANDLE *async_handle, unsigned int options, IO_STATUS_BLOCK *io,
+                              NTSTATUS status, ULONG_PTR information, BOOL mark_pending )
+{
+    unsigned int ret;
+
+    /* if we got STATUS_ALERTED, we must have a valid async handle */
+    assert( *async_handle );
+
+    if (!NT_ERROR(status) && status != STATUS_PENDING)
+        set_sync_iosb( io, status, information, options );
+
+    SERVER_START_REQ( set_async_direct_result )
+    {
+        req->handle       = wine_server_obj_handle( *async_handle );
+        req->status       = status;
+        req->information  = information;
+        req->mark_pending = mark_pending;
+        ret = wine_server_call( req );
+        if (ret == STATUS_SUCCESS)
+            *async_handle = wine_server_ptr_handle( reply->handle );
+    }
+    SERVER_END_REQ;
+
+    if (ret != STATUS_SUCCESS)
+        ERR( "cannot report I/O result back to server: %#x\n", ret );
+}
+
 /* complete async file I/O, signaling completion in all ways necessary */
-void file_complete_async( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user,
+void file_complete_async( HANDLE handle, unsigned int options, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user,
                           IO_STATUS_BLOCK *io, NTSTATUS status, ULONG_PTR information )
 {
     ULONG_PTR iosb_ptr = iosb_client_ptr(io);
 
-    io->Status = status;
-    io->Information = information;
+    set_sync_iosb( io, status, information, options );
     if (event) NtSetEvent( event, NULL );
     if (apc) NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc, (ULONG_PTR)apc_user, iosb_ptr, 0 );
     else if (apc_user) add_completion( handle, (ULONG_PTR)apc_user, status, information, FALSE );
@@ -7052,8 +7078,7 @@ err:
     if (needs_close) close( unix_handle );
     if (status == STATUS_SUCCESS || (status == STATUS_END_OF_FILE && (!async_read || type == FD_TYPE_FILE)))
     {
-        io->Status = status;
-        io->Information = total;
+        set_sync_iosb( io, status, total, options );
         TRACE("= SUCCESS (%u)\n", total);
         if (event) NtSetEvent( event, NULL );
         if (apc && (!status || async_read)) NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc,
@@ -7133,8 +7158,7 @@ NTSTATUS WINAPI NtReadFileScatter( HANDLE file, HANDLE event, PIO_APC_ROUTINE ap
     send_completion = cvalue != 0;
 
     if (needs_close) close( unix_handle );
-    io->Status = status;
-    io->Information = total;
+    set_sync_iosb( io, status, total, options );
     TRACE("= 0x%08x (%u)\n", status, total);
     if (event) NtSetEvent( event, NULL );
     if (apc) NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc, (ULONG_PTR)apc_user, iosb_ptr, 0 );
@@ -7362,8 +7386,7 @@ err:
 
     if (status == STATUS_SUCCESS)
     {
-        io->Status = status;
-        io->Information = total;
+        set_sync_iosb( io, status, total, options );
         TRACE("= SUCCESS (%u)\n", total);
         if (event) NtSetEvent( event, NULL );
         if (apc) NtQueueApcThread( GetCurrentThread(), (PNTAPCFUNC)apc, (ULONG_PTR)apc_user, iosb_ptr, 0 );
@@ -7446,7 +7469,7 @@ NTSTATUS WINAPI NtWriteFileGather( HANDLE file, HANDLE event, PIO_APC_ROUTINE ap
     if (needs_close) close( unix_handle );
     if (status == STATUS_SUCCESS)
     {
-        file_complete_async( file, event, apc, apc_user, io, status, total );
+        file_complete_async( file, options, event, apc, apc_user, io, status, total );
         TRACE("= SUCCESS (%u)\n", total);
     }
     else
@@ -7508,6 +7531,18 @@ NTSTATUS WINAPI NtDeviceIoControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUT
 }
 
 
+/* helper for internal ioctl calls */
+NTSTATUS sync_ioctl( HANDLE file, ULONG code, void *in_buffer, ULONG in_size, void *out_buffer, ULONG out_size )
+{
+    IO_STATUS_BLOCK32 io32;
+    IO_STATUS_BLOCK io;
+
+    /* the 32-bit iosb is filled for overlapped file handles */
+    io.Pointer = &io32;
+    return NtDeviceIoControlFile( file, NULL, NULL, NULL, &io, code, in_buffer, in_size, out_buffer, out_size );
+}
+
+
 /* Tell Valgrind to ignore any holes in structs we will be passing to the
  * server */
 static void ignore_server_ioctl_struct_holes( ULONG code, const void *in_buffer, ULONG in_size )
@@ -7539,6 +7574,8 @@ NTSTATUS WINAPI NtFsControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
                                  IO_STATUS_BLOCK *io, ULONG code, void *in_buffer, ULONG in_size,
                                  void *out_buffer, ULONG out_size )
 {
+    unsigned int options;
+    int fd, needs_close;
     ULONG_PTR size = 0;
     NTSTATUS status;
 
@@ -7547,6 +7584,11 @@ NTSTATUS WINAPI NtFsControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
            in_buffer, (int)in_size, out_buffer, (int)out_size );
 
     if (!io) return STATUS_INVALID_PARAMETER;
+
+    status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, &options );
+    if (status && status != STATUS_BAD_DEVICE_TYPE)
+        return status;
+    if (needs_close) close( fd );
 
     ignore_server_ioctl_struct_holes( code, in_buffer, in_size );
 
@@ -7652,7 +7694,7 @@ NTSTATUS WINAPI NtFsControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     }
 
     if (!NT_ERROR(status) && status != STATUS_PENDING)
-        file_complete_async( handle, event, apc, apc_context, io, status, size );
+        file_complete_async( handle, options, event, apc, apc_context, io, status, size );
     return status;
 }
 

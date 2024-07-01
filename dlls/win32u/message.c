@@ -2698,7 +2698,6 @@ int peek_message( MSG *msg, const struct peek_message_filter *filter )
                 info.msg.pt.x    = reply->x;
                 info.msg.pt.y    = reply->y;
                 hw_id            = 0;
-                thread_info->active_hooks = reply->active_hooks;
             }
             else buffer_size = reply->total;
         }
@@ -2945,7 +2944,7 @@ static HANDLE get_server_queue_handle(void)
 
     if (!(ret = thread_info->server_queue))
     {
-        SERVER_START_REQ( get_msg_queue )
+        SERVER_START_REQ( get_msg_queue_handle )
         {
             wine_server_call( req );
             ret = wine_server_ptr_handle( reply->handle );

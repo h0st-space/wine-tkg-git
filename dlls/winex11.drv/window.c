@@ -1959,7 +1959,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
         data->layered = FALSE;
         set_window_visual( data, &default_visual, FALSE );
         sync_window_opacity( data->display, data->whole_window, 0, 0, 0 );
-        if (data->surface) set_surface_color_key( data->surface, CLR_INVALID );
+        if (data->surface) window_surface_set_layered( data->surface, CLR_INVALID, -1, 0 );
     }
 done:
     release_win_data( data );
@@ -2676,7 +2676,6 @@ done:
 BOOL X11DRV_WindowPosChanging( HWND hwnd, UINT swp_flags, const RECT *window_rect, const RECT *client_rect, RECT *visible_rect )
 {
     struct x11drv_win_data *data = get_win_data( hwnd );
-    RECT surface_rect;
     BOOL ret = FALSE;
 
     if (!data && !(data = X11DRV_create_win_data( hwnd, window_rect, client_rect ))) return FALSE; /* use default surface */
@@ -2694,9 +2693,7 @@ BOOL X11DRV_WindowPosChanging( HWND hwnd, UINT swp_flags, const RECT *window_rec
     X11DRV_window_to_X_rect( data, visible_rect, window_rect, client_rect );
 
     if (!data->whole_window && !data->embedded) goto done; /* use default surface */
-    if (swp_flags & SWP_HIDEWINDOW) goto done; /* use default surface */
     if (data->use_alpha) goto done; /* use default surface */
-    if (!get_surface_rect( visible_rect, &surface_rect )) goto done; /* use default surface */
 
     ret = TRUE;
 
@@ -2987,7 +2984,7 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
         if (data->whole_window)
             sync_window_opacity( data->display, data->whole_window, key, alpha, flags );
         if (data->surface)
-            set_surface_color_key( data->surface, (flags & LWA_COLORKEY) ? key : CLR_INVALID );
+            window_surface_set_layered( data->surface, (flags & LWA_COLORKEY) ? key : CLR_INVALID, alpha << 24, 0 );
 
         data->layered = TRUE;
         if (!data->mapped)  /* mapping is delayed until attributes are set */

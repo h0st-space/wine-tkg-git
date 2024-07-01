@@ -193,7 +193,6 @@ else
     AC_MSG_ERROR([could not find Wine tools in $wine_cv_toolsdir])
 fi
 AC_SUBST(toolsdir,[$wine_cv_toolsdir])
-AC_SUBST(MAKEDEP,[$wine_makedep])
 AC_SUBST(RUNTESTFLAGS,["-q -P wine"])
 AC_SUBST(SED_CMD,["LC_ALL=C sed -e 's,@bindir@,\${bindir},g' -e 's,@PACKAGE_STRING@,$PACKAGE_STRING,g' -e 's,@PACKAGE_VERSION@,$PACKAGE_VERSION,g'"])
 
@@ -1971,17 +1970,16 @@ char*f(const char *h,char n) {return strchr(h,n);}]])],[ac_cv_c_logicalop_noisy=
         dnl Mingw uses Windows 64-bit types, not Unix ones
         cygwin*|mingw32*) WINE_TRY_CFLAGS([-Wno-format]) ;;
         dnl Default to ms_abi on 64-bit
-        *) if test -z "$PE_ARCHS"
-           then
-               AC_CACHE_CHECK([for working -mabi=ms], ac_cv_mabi_ms,
-                   [CFLAGS="$CFLAGS -mabi=ms"
-                    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdarg.h>
+        *) AC_CACHE_CHECK([for working -mabi=ms], ac_cv_mabi_ms,
+               [CFLAGS="$CFLAGS -mabi=ms"
+                AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdarg.h>
 int a(int b, ...) { __builtin_ms_va_list list; __builtin_ms_va_start(list,b); }]])],
-                       [ac_cv_mabi_ms=yes],[ac_cv_mabi_ms=no])
-                    CFLAGS=$saved_CFLAGS])
-               test $ac_cv_mabi_ms = yes || AC_MSG_ERROR([The compiler doesn't support -mabi=ms. Use gcc instead of clang, or install mingw-w64.])
-           fi
-           MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms" ;;
+                   [ac_cv_mabi_ms=yes],[ac_cv_mabi_ms=no])
+                CFLAGS=$saved_CFLAGS])
+           AS_VAR_IF([ac_cv_mabi_ms],[yes],
+                     [MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms"],
+                     [test -n "$PE_ARCHS" || AC_MSG_ERROR([The compiler doesn't support -mabi=ms. Use gcc instead of clang, or install mingw-w64.])
+                      DLLEXT=""]) ;;
       esac ;;
     arm)
       WINE_TRY_CFLAGS([-Wincompatible-function-pointer-types],[EXTRACFLAGS="$EXTRACFLAGS -Wno-error=incompatible-function-pointer-types"]) ;;
@@ -2426,7 +2424,7 @@ AH_BOTTOM([#endif /* __WINE_CONFIG_H */])
 AC_CONFIG_COMMANDS([include/stamp-h], [echo timestamp > include/stamp-h])
 AS_ECHO_N("creating Makefile rules...") >&AS_MESSAGE_FD
 
-makedep_flags=""
+makedep_flags=" -C"
 test "x$enable_silent_rules" = xyes && makedep_flags="$makedep_flags -S"
 
 wine_srcdir=
@@ -3599,6 +3597,7 @@ dnl Main ignore file
 WINE_IGNORE_FILE(TAGS)
 WINE_IGNORE_FILE(tags)
 WINE_IGNORE_FILE(autom4te.cache)
+WINE_IGNORE_FILE(compile_commands.json)
 WINE_IGNORE_FILE(config.log)
 WINE_IGNORE_FILE(config.status)
 WINE_IGNORE_FILE(include/config.h)
@@ -3645,21 +3644,14 @@ dnl Main makefile
 
 AC_SUBST(SHELL,[/bin/sh])
 
-WINE_APPEND_RULE(
-[all: wine
-	@echo \"Wine build complete.\"
-.INIT: Makefile
-.MAKEFILEDEPS:
-all: Makefile
-Makefile: config.status \$(MAKEDEP)
-	@./config.status Makefile
-depend: \$(MAKEDEP)
-	\$(MAKEDEP)$makedep_flags])
-
 dnl Rules for re-running configure
 
 WINE_APPEND_RULE(
-[config.status: ${wine_srcdir}configure
+[all: wine
+	@echo \"Wine build complete.\"
+Makefile: config.status
+	@./config.status Makefile
+config.status: ${wine_srcdir}configure
 	@./config.status --recheck
 include/config.h: include/stamp-h
 include/stamp-h: ${wine_srcdir}include/config.h.in config.status
@@ -3734,7 +3726,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-9.11.r9.g7fc08a96\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging Esync Fsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-9.12.r0.g79dd2358\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging Esync Fsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.nfo:
@@ -3754,7 +3746,7 @@ tags ctags:
 	rm -f tags
 	(test -d .git && git ls-files || find -L $srcdir -name '*.[[ch]]' -print) | xargs ctags -a \$(TAGSFLAGS)
 dummy:
-.PHONY: depend dummy install-manpages])
+.PHONY: dummy])
 
 AS_ECHO(" done") >&AS_MESSAGE_FD
 AC_OUTPUT

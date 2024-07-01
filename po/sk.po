@@ -15100,6 +15100,18 @@ msgstr ""
 msgid "Syntax error: unexpected %1\n"
 msgstr ""
 
+#: programs/cmd/cmd.rc:412
+#, fuzzy
+#| msgid "End of file.\n"
+msgid "End of line"
+msgstr "Koniec súboru.\n"
+
+#: programs/cmd/cmd.rc:413
+#, fuzzy
+#| msgid "End of file.\n"
+msgid "End of file"
+msgstr "Koniec súboru.\n"
+
 #: programs/conhost/conhost.rc:54
 msgid "Cursor size"
 msgstr ""
