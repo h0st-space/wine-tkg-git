@@ -268,7 +268,7 @@
 @ stdcall CopyLZFile(long long) LZCopy
 @ stdcall CreateActCtxA(ptr)
 @ stdcall -import CreateActCtxW(ptr)
-# @ stub CreateBoundaryDescriptorA
+@ stdcall CreateBoundaryDescriptorA(str long)
 @ stdcall -import CreateBoundaryDescriptorW(wstr long)
 @ stdcall -import CreateConsoleScreenBuffer(long long ptr long ptr)
 @ stdcall -import CreateDirectoryA(str ptr)
@@ -622,7 +622,7 @@
 @ stdcall -import GetConsoleProcessList(ptr long)
 @ stdcall -import GetConsoleScreenBufferInfo(long ptr)
 @ stdcall -import GetConsoleScreenBufferInfoEx(long ptr)
-# @ stub GetConsoleSelectionInfo
+@ stdcall -import GetConsoleSelectionInfo(ptr)
 @ stdcall -import GetConsoleTitleA(ptr long)
 @ stdcall -import GetConsoleTitleW(ptr long)
 @ stdcall -import GetConsoleWindow()
@@ -957,7 +957,7 @@
 @ stub HeapSetFlags
 @ stdcall -import HeapSetInformation(ptr long ptr long)
 @ stdcall HeapSize(long long ptr) NTDLL.RtlSizeHeap
-@ stub HeapSummary
+@ stdcall -import HeapSummary(long long ptr)
 @ stdcall -import HeapUnlock(long)
 @ stub HeapUsage
 @ stdcall -import HeapValidate(long long ptr)

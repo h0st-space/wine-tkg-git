@@ -36,6 +36,11 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
+/* The cursor-shape-v1 protocol file references the zwp_tablet_tool_v2
+ * interface object. Since we don't currently use the tablet protocol,
+ * provide a dummy object here to avoid linking errors. */
+void *zwp_tablet_tool_v2_interface = NULL;
+
 struct system_cursors
 {
     WORD id;
@@ -761,7 +766,6 @@ static BOOL wayland_pointer_set_cursor_shape(HCURSOR hcursor)
     enum wp_cursor_shape_device_v1_shape shape = 0;
     uint32_t proto_version;
 
-    if (!option_use_system_cursors) return FALSE;
     if (!process_wayland.wp_cursor_shape_manager_v1) return FALSE;
     if (!hcursor) return FALSE;
     if (!get_icon_info(hcursor, &info)) return FALSE;
@@ -920,8 +924,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                               BOOL force_lock)
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
-    BOOL needs_relative, needs_lock, needs_confine;
-    BOOL is_visible;
+    BOOL needs_relative, needs_lock, needs_confine, is_visible;
     static unsigned int once;
 
     if (!process_wayland.zwp_pointer_constraints_v1)

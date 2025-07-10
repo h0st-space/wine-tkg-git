@@ -116,6 +116,26 @@ int* __cdecl __processing_throw(void);
 
 #define _MAX__TIME64_T     (((__time64_t)0x00000007 << 32) | 0x93406FFF)
 
+static BOOL compare_uint(unsigned int x, unsigned int y, unsigned int max_diff)
+{
+    unsigned int diff = x > y ? x - y : y - x;
+
+    return diff <= max_diff;
+}
+
+static BOOL compare_float(float f, float g, unsigned int ulps)
+{
+    int x = *(int *)&f;
+    int y = *(int *)&g;
+
+    if (x < 0)
+        x = INT_MIN - x;
+    if (y < 0)
+        y = INT_MIN - y;
+
+    return compare_uint(x, y, ulps);
+}
+
 static void test__initialize_onexit_table(void)
 {
     _onexit_table_t table, table2;
@@ -493,23 +513,27 @@ static void test__sopen_dispatch(void)
 
 static void test__sopen_s(void)
 {
-    int ret, fd;
+    int ret, fd, fd2;
     char *tempf;
 
     tempf = _tempnam(".", "wne");
 
     fd = 0;
-    ret = _sopen_s(&fd, tempf, _O_CREAT, _SH_DENYWR, 0);
+    ret = _sopen_s(&fd, tempf, _O_CREAT, _SH_DENYWR, _S_IWRITE);
     ok(!ret, "got %d\n", ret);
     ok(fd > 0, "got fd %d\n", fd);
-    _close(fd);
-    unlink(tempf);
+    ret = _close(fd);
+    ok(!ret, "_close() returned %d\n", ret);
+    ret = unlink(tempf);
+    ok(!ret, "unlink() returned %d\n", ret);
 
     /* _open() does not validate pmode */
     fd = _open(tempf, _O_CREAT, 0xff);
     ok(fd > 0, "got fd %d\n", fd);
-    _close(fd);
-    unlink(tempf);
+    ret = _close(fd);
+    ok(!ret, "_close() returned %d\n", ret);
+    ret = unlink(tempf);
+    ok(!ret, "unlink() returned %d\n", ret);
 
     /* _sopen_s() invokes invalid parameter handler on invalid pmode */
     SET_EXPECT(global_invalid_parameter_handler);
@@ -518,6 +542,32 @@ static void test__sopen_s(void)
     ok(ret == EINVAL, "got %d\n", ret);
     ok(fd == -1, "got fd %d\n", fd);
     CHECK_CALLED(global_invalid_parameter_handler);
+
+    fd = 0;
+    ret = _sopen_s(&fd, tempf, _O_CREAT | _O_WRONLY, _SH_SECURE, _S_IWRITE);
+    ok(!ret, "got %d\n", ret);
+    ok(fd > 0, "got fd %d\n", fd);
+    fd2 = 0;
+    ret = _sopen_s(&fd2, tempf, _O_RDONLY, _SH_SECURE, 0);
+    ok(ret == EACCES, "got %d\n", ret);
+    ok(fd2 == -1, "got fd %d\n", fd2);
+    ret = _close(fd);
+    ok(!ret, "close() returned %d\n", ret);
+
+    fd = 0;
+    ret = _sopen_s(&fd, tempf, _O_RDONLY, _SH_SECURE, 0);
+    ok(!ret, "got %d\n", ret);
+    ok(fd > 0, "got fd %d\n", fd);
+    fd2 = 0;
+    ret = _sopen_s(&fd2, tempf, _O_RDONLY, _SH_SECURE, 0);
+    ok(!ret, "got %d\n", ret);
+    ok(fd2 > 0, "got fd %d\n", fd2);
+    ret = close(fd);
+    ok(!ret, "_close() returned %d\n", ret);
+    ret = close(fd2);
+    ok(!ret, "_close() returned %d\n", ret);
+    ret = unlink(tempf);
+    ok(!ret, "unlink() returned %d\n", ret);
 
     free(tempf);
 }
@@ -1725,6 +1775,55 @@ static void test__get_heap_handle(void)
     ok((HANDLE)_get_heap_handle() == GetProcessHeap(), "Expected _get_heap_handle() to return GetProcessHeap()\n");
 }
 
+static void test_expf(void)
+{
+    static const struct {
+        float x, exp;
+        int type;
+        errno_t e;
+    } tests[] = {
+        {  NAN,      NAN,           _DOMAIN,   EDOM   },
+        { -NAN,      NAN,           _DOMAIN,   EDOM   },
+        {  INFINITY, INFINITY                         },
+        { -INFINITY, 0.0f                             },
+        {  0.0f,     1.0f                             },
+        {  1.0f,     2.7182817f                       },
+        {  88.72f,   3.3931806e+38                    },
+        {  88.73f,   INFINITY,      _OVERFLOW, ERANGE },
+        { -103.97f,  1.4012985e-45                    },
+        { -103.98f,  0.0f,          _UNDERFLOW        },
+    };
+    errno_t e;
+    float r;
+    int i;
+
+    __setusermatherr(matherr_callback);
+
+    for(i=0; i<ARRAY_SIZE(tests); i++) {
+        errno = -1;
+        exception.type = -1;
+        r = expf(tests[i].x);
+        e = errno;
+
+        if(isnan(tests[i].exp))
+            ok(isnan(r), "expected NAN, got %0.7e for %d\n", r, i);
+        else{
+            ok(compare_float(r, tests[i].exp, 0),
+                "expected %0.7e, got %0.7e for %d\n", tests[i].exp, r, i);
+            ok(signbit(r) == signbit(tests[i].exp),
+                "expected sign %x, got %x for %d\n", signbit(tests[i].exp), signbit(r), i);
+        }
+
+        ok(e == tests[i].e ? tests[i].e : -1,
+            "expected errno %d, but got %d for %d\n", tests[i].e, e, i);
+
+        ok(exception.type == tests[i].type ? tests[i].type : -1,
+            "expected %d, got %d for %d\n", tests[i].type, exception.type, i);
+    }
+
+    __setusermatherr(NULL);
+}
+
 START_TEST(misc)
 {
     int arg_c;
@@ -1772,4 +1871,5 @@ START_TEST(misc)
 #endif
     test_gmtime64();
     test__get_heap_handle();
+    test_expf();
 }

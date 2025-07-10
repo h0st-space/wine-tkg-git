@@ -197,13 +197,20 @@ my %manual_win_thunks =
     );
 my %manual_unix_thunks =
     (
+     "glClear" => 1,
      "glDebugMessageCallback" => 1,
      "glDebugMessageCallbackAMD" => 1,
      "glDebugMessageCallbackARB" => 1,
+     "glDrawPixels" => 1,
+     "glFinish" => 1,
+     "glFlush" => 1,
      "glGetIntegerv" => 1,
      "glGetString" => 1,
      "glGetStringi" => 1,
+     "glReadPixels" => 1,
+     "glViewport" => 1,
      "wglGetProcAddress" => 1,
+     "wglSwapBuffers" => 1,
     );
 my %manual_wow64_thunks =
     (
@@ -768,6 +775,7 @@ my %supported_egl_extensions =
     "EGL_KHR_no_config_context" => 1,
     "EGL_KHR_platform_android" => 1,
     "EGL_KHR_platform_wayland" => 1,
+    "EGL_KHR_platform_x11" => 1,
    );
 
 my %supported_apis =

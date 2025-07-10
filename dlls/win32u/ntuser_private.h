@@ -65,9 +65,8 @@ typedef struct tagWND
     HICON              hIconSmall;    /* window's small icon */
     HICON              hIconSmall2;   /* window's secondary small icon, derived from hIcon */
     HIMC               imc;           /* window's input context */
-    UINT               dpi_context;   /* window DPI awareness context */
     struct window_surface *surface;   /* Window surface if any */
-    struct list        vulkan_surfaces; /* list of vulkan surfaces created for this window */
+    struct opengl_drawable *opengl_drawable; /* last GL client surface for this window */
     struct tagDIALOGINFO *dlgInfo;    /* Dialog additional info (dialogs only) */
     int                swap_interval; /* OpenGL surface swap interval */
     int                pixel_format;  /* Pixel format set by the graphics driver */
@@ -222,7 +221,10 @@ extern PFN_vkGetDeviceProcAddr p_vkGetDeviceProcAddr;
 extern PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 
 extern BOOL vulkan_init(void);
-extern void vulkan_detach_surfaces( struct list *surfaces );
+
+/* opengl.c */
+extern void update_opengl_drawables( HWND hwnd );
+extern void detach_opengl_drawables( HWND hwnd );
 
 /* window.c */
 HANDLE alloc_user_handle( void *ptr, unsigned short type );

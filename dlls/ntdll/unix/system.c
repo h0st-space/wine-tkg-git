@@ -525,7 +525,7 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
         features[PF_3DNOW_INSTRUCTIONS_AVAILABLE]   = !!(regs[3] & (1u << 31));
     }
 
-    if (features[PF_AVX_INSTRUCTIONS_AVAILABLE] && features[PF_XSAVE_ENABLED])
+    if (features[PF_XSAVE_ENABLED])
         init_xstate_features( &data->XState );
 }
 
@@ -1786,7 +1786,7 @@ static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs
 
 #else
 
-static DWORD get_core_id_regs_arm64( struct smbios_wine_core_id_regs_arm64 *core_id_regs,
+static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs,
                                      WORD logical_thread_id )
 {
     FIXME("stub\n");

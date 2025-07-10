@@ -100,7 +100,7 @@ static NTSTATUS wgl_wglSwapBuffers( void *args )
     struct wglSwapBuffers_params *params = args;
     const struct opengl_funcs *funcs = get_dc_funcs( params->hdc );
     if (!funcs || !funcs->p_wglSwapBuffers) return STATUS_NOT_IMPLEMENTED;
-    params->ret = funcs->p_wglSwapBuffers( params->hdc );
+    params->ret = wrap_wglSwapBuffers( params->teb, params->hdc );
     return STATUS_SUCCESS;
 }
 
@@ -196,8 +196,7 @@ static NTSTATUS gl_glCallLists( void *args )
 static NTSTATUS gl_glClear( void *args )
 {
     struct glClear_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glClear( params->mask );
+    wrap_glClear( params->teb, params->mask );
     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
     return STATUS_SUCCESS;
 }
@@ -718,8 +717,7 @@ static NTSTATUS gl_glDrawElements( void *args )
 static NTSTATUS gl_glDrawPixels( void *args )
 {
     struct glDrawPixels_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glDrawPixels( params->width, params->height, params->format, params->type, params->pixels );
+    wrap_glDrawPixels( params->teb, params->width, params->height, params->format, params->type, params->pixels );
     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
     return STATUS_SUCCESS;
 }
@@ -907,8 +905,7 @@ static NTSTATUS gl_glFeedbackBuffer( void *args )
 static NTSTATUS gl_glFinish( void *args )
 {
     struct glFinish_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glFinish();
+    wrap_glFinish( params->teb );
     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
     return STATUS_SUCCESS;
 }
@@ -916,8 +913,7 @@ static NTSTATUS gl_glFinish( void *args )
 static NTSTATUS gl_glFlush( void *args )
 {
     struct glFlush_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glFlush();
+    wrap_glFlush( params->teb );
     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
     return STATUS_SUCCESS;
 }
@@ -2205,8 +2201,7 @@ static NTSTATUS gl_glReadBuffer( void *args )
 static NTSTATUS gl_glReadPixels( void *args )
 {
     struct glReadPixels_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glReadPixels( params->x, params->y, params->width, params->height, params->format, params->type, params->pixels );
+    wrap_glReadPixels( params->teb, params->x, params->y, params->width, params->height, params->format, params->type, params->pixels );
     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
     return STATUS_SUCCESS;
 }
@@ -3087,8 +3082,7 @@ static NTSTATUS gl_glVertexPointer( void *args )
 static NTSTATUS gl_glViewport( void *args )
 {
     struct glViewport_params *params = args;
-    const struct opengl_funcs *funcs = params->teb->glTable;
-    funcs->p_glViewport( params->x, params->y, params->width, params->height );
+    wrap_glViewport( params->teb, params->x, params->y, params->width, params->height );
     set_context_attribute( params->teb, GL_VIEWPORT, &params->x, 2 * sizeof(GLint) + 2 * sizeof(GLsizei) );
     return STATUS_SUCCESS;
 }

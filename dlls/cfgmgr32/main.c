@@ -24,6 +24,8 @@
 #include "dbt.h"
 #include "wine/plugplay.h"
 #include "setupapi.h"
+#include "devfiltertypes.h"
+#include "devquery.h"
 
 #include "initguid.h"
 #include "devpkey.h"
@@ -255,7 +257,6 @@ CONFIGRET WINAPI CM_Get_Device_Interface_PropertyW( LPCWSTR device_interface, co
                                                     ULONG *property_buffer_size, ULONG flags )
 {
     SP_DEVICE_INTERFACE_DATA iface = {sizeof(iface)};
-    SP_DEVINFO_DATA device = { sizeof(device) };
     HDEVINFO set;
     DWORD err;
     BOOL ret;
@@ -268,12 +269,6 @@ CONFIGRET WINAPI CM_Get_Device_Interface_PropertyW( LPCWSTR device_interface, co
     if (*property_buffer_size && !property_buffer) return CR_INVALID_POINTER;
     if (flags) return CR_INVALID_FLAG;
 
-    if (memcmp( property_key, &DEVPKEY_Device_InstanceId, sizeof(*property_key) ))
-    {
-        FIXME( "property %s\\%lx.\n", debugstr_guid( &property_key->fmtid ), property_key->pid );
-        return CR_NO_SUCH_VALUE;
-    }
-
     set = SetupDiCreateDeviceInfoListExW( NULL, NULL, NULL, NULL );
     if (set == INVALID_HANDLE_VALUE) return CR_OUT_OF_MEMORY;
     if (!SetupDiOpenDeviceInterfaceW( set, device_interface, 0, &iface ))
@@ -282,17 +277,165 @@ CONFIGRET WINAPI CM_Get_Device_Interface_PropertyW( LPCWSTR device_interface, co
         TRACE( "No interface %s, err %lu.\n", debugstr_w( device_interface ), GetLastError());
         return CR_NO_SUCH_DEVICE_INTERFACE;
     }
-    if (!SetupDiEnumDeviceInfo( set, 0, &device ))
-    {
-        SetupDiDestroyDeviceInfoList( set );
-        return CR_FAILURE;
-    }
-    ret = SetupDiGetDeviceInstanceIdW( set, &device, (WCHAR *)property_buffer, *property_buffer_size / sizeof(WCHAR),
-                                       property_buffer_size );
+
+    ret = SetupDiGetDeviceInterfacePropertyW( set, &iface, property_key, property_type, property_buffer,
+                                              *property_buffer_size, property_buffer_size, 0 );
     err = ret ? 0 : GetLastError();
     SetupDiDestroyDeviceInfoList( set );
-    *property_type = DEVPROP_TYPE_STRING;
-    *property_buffer_size *= sizeof(WCHAR);
-    if (!err) return CR_SUCCESS;
-    return err == ERROR_INSUFFICIENT_BUFFER ? CR_BUFFER_SMALL : CR_FAILURE;
+    switch (err)
+    {
+    case ERROR_SUCCESS:
+        return CR_SUCCESS;
+    case ERROR_INSUFFICIENT_BUFFER:
+        return CR_BUFFER_SMALL;
+    case ERROR_NOT_FOUND:
+        return CR_NO_SUCH_VALUE;
+    default:
+        return CR_FAILURE;
+    }
+}
+
+BOOL dev_objects_append_iface( DEV_OBJECT **objects, ULONG *len, const WCHAR *path, DEV_OBJECT_TYPE type )
+{
+    DEV_OBJECT *tmp;
+    WCHAR *id;
+
+    if (!(id = wcsdup( path )))
+        return FALSE;
+    if (!(tmp = realloc( *objects, (*len + 1) * sizeof( **objects ) )))
+    {
+        free( id );
+        return FALSE;
+    }
+    *objects = tmp;
+
+    tmp = &tmp[*len];
+    tmp->ObjectType = type;
+    tmp->pszObjectId = id;
+    tmp->cPropertyCount = 0;
+    tmp->pProperties = NULL;
+
+    *len += 1;
+    return TRUE;
+}
+
+HRESULT WINAPI DevGetObjects( DEV_OBJECT_TYPE type, ULONG flags, ULONG props_len, const DEVPROPCOMPKEY *props,
+                              ULONG filters_len, const DEVPROP_FILTER_EXPRESSION *filters, ULONG *objs_len,
+                              const DEV_OBJECT **objs )
+{
+    TRACE( "(%d, %#lx, %lu, %p, %lu, %p, %p, %p)\n", type, flags, props_len, props, filters_len, filters, objs_len, objs );
+    return DevGetObjectsEx( type, flags, props_len, props, filters_len, filters, 0, NULL, objs_len, objs );
+}
+
+HRESULT WINAPI DevGetObjectsEx( DEV_OBJECT_TYPE type, ULONG flags, ULONG props_len, const DEVPROPCOMPKEY *props,
+                                ULONG filters_len, const DEVPROP_FILTER_EXPRESSION *filters, ULONG params_len,
+                                const DEV_QUERY_PARAMETER *params, ULONG *objs_len, const DEV_OBJECT **objs )
+{
+    ULONG objects_len = 0, valid_flags = DevQueryFlagAllProperties | DevQueryFlagLocalize;
+    DEV_OBJECT *objects = NULL;
+    HRESULT hr = S_OK;
+    HKEY iface_key;
+
+    TRACE( "(%d, %#lx, %lu, %p, %lu, %p, %lu, %p, %p, %p)\n", type, flags, props_len, props, filters_len, filters,
+           params_len, params, objs_len, objs );
+
+    if (!!props_len != !!props || !!filters_len != !!filters || !!params_len != !!params || (flags & ~valid_flags))
+        return E_INVALIDARG;
+    if (props || flags & DevQueryFlagAllProperties)
+        FIXME( "Object properties are not supported!\n" );
+    if (filters)
+        FIXME( "Query filters are not supported!\n" );
+    if (params)
+        FIXME( "Query parameters are not supported!\n" );
+
+    *objs = NULL;
+    *objs_len = 0;
+
+    switch (type)
+    {
+    case DevObjectTypeDeviceInterface:
+    case DevObjectTypeDeviceInterfaceDisplay:
+    {
+        DWORD i;
+
+        if (!(iface_key = SetupDiOpenClassRegKeyExW( NULL, KEY_ENUMERATE_SUB_KEYS, DIOCR_INTERFACE, NULL, NULL )))
+            return HRESULT_FROM_WIN32( GetLastError() );
+
+        for (i = 0; SUCCEEDED( hr ); i++)
+        {
+            char buffer[sizeof( SP_DEVICE_INTERFACE_DETAIL_DATA_W ) + MAX_PATH * sizeof( WCHAR )];
+            SP_DEVICE_INTERFACE_DATA iface = {.cbSize = sizeof( iface )};
+            SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail = (void *)buffer;
+            HDEVINFO set = INVALID_HANDLE_VALUE;
+            WCHAR iface_guid_str[40];
+            DWORD ret, len, j;
+            GUID iface_class;
+
+            len = ARRAY_SIZE( iface_guid_str );
+            ret = RegEnumKeyExW( iface_key, i, iface_guid_str, &len, NULL, NULL, NULL, NULL );
+            if (ret)
+            {
+                hr = (ret == ERROR_NO_MORE_ITEMS) ? S_OK : HRESULT_FROM_WIN32( ret );
+                break;
+            }
+
+            iface_guid_str[37] = '\0';
+            if (!UuidFromStringW( &iface_guid_str[1], &iface_class ))
+            {
+                set = SetupDiGetClassDevsW( &iface_class, NULL, NULL, DIGCF_DEVICEINTERFACE );
+                if (set == INVALID_HANDLE_VALUE) hr = HRESULT_FROM_WIN32( GetLastError() );
+            }
+            else
+                ERR( "Could not parse device interface GUID %s\n", debugstr_w( iface_guid_str ) );
+
+            for (j = 0; SUCCEEDED( hr ) && SetupDiEnumDeviceInterfaces( set, NULL, &iface_class, j, &iface ); j++)
+            {
+                detail->cbSize = sizeof( *detail );
+                if (!SetupDiGetDeviceInterfaceDetailW( set, &iface, detail, sizeof( buffer ), NULL, NULL )) continue;
+                if (!dev_objects_append_iface( &objects, &objects_len, detail->DevicePath, type )) hr = E_OUTOFMEMORY;
+            }
+
+            if (set != INVALID_HANDLE_VALUE)
+                SetupDiDestroyDeviceInfoList( set );
+        }
+        RegCloseKey( iface_key );
+        break;
+    }
+    case DevObjectTypeDeviceContainer:
+    case DevObjectTypeDevice:
+    case DevObjectTypeDeviceInterfaceClass:
+    case DevObjectTypeAEP:
+    case DevObjectTypeAEPContainer:
+    case DevObjectTypeDeviceInstallerClass:
+    case DevObjectTypeDeviceContainerDisplay:
+    case DevObjectTypeAEPService:
+    case DevObjectTypeDevicePanel:
+    case DevObjectTypeAEPProtocol:
+        FIXME( "Unsupported DEV_OBJECT_TYPE: %d\n", type );
+    default:
+        break;
+    }
+
+    if (hr == S_OK)
+    {
+        *objs = objects;
+        *objs_len = objects_len;
+    }
+    else
+        DevFreeObjects( objects_len, objects );
+
+    return hr;
+}
+
+void WINAPI DevFreeObjects( ULONG objs_len, const DEV_OBJECT *objs )
+{
+    DEV_OBJECT *objects = (DEV_OBJECT *)objs;
+    ULONG i;
+
+    TRACE( "(%lu, %p)\n", objs_len, objs );
+
+    for (i = 0; i < objs_len; i++)
+        free( (void *)objects[i].pszObjectId );
+    free( objects );
+    return;
 }

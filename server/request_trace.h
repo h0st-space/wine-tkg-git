@@ -1362,6 +1362,27 @@ static void dump_get_atom_information_reply( const struct get_atom_information_r
     dump_varargs_unicode_str( ", name=", cur_size );
 }
 
+static void dump_add_user_atom_request( const struct add_user_atom_request *req )
+{
+    dump_varargs_unicode_str( " name=", cur_size );
+}
+
+static void dump_add_user_atom_reply( const struct add_user_atom_reply *req )
+{
+    fprintf( stderr, " atom=%04x", req->atom );
+}
+
+static void dump_get_user_atom_name_request( const struct get_user_atom_name_request *req )
+{
+    fprintf( stderr, " atom=%04x", req->atom );
+}
+
+static void dump_get_user_atom_name_reply( const struct get_user_atom_name_reply *req )
+{
+    fprintf( stderr, " total=%u", req->total );
+    dump_varargs_unicode_str( ", name=", cur_size );
+}
+
 static void dump_get_msg_queue_handle_request( const struct get_msg_queue_handle_request *req )
 {
 }
@@ -1675,6 +1696,7 @@ static void dump_create_window_request( const struct create_window_request *req 
     fprintf( stderr, " parent=%08x", req->parent );
     fprintf( stderr, ", owner=%08x", req->owner );
     fprintf( stderr, ", atom=%04x", req->atom );
+    dump_uint64( ", class_instance=", &req->class_instance );
     dump_uint64( ", instance=", &req->instance );
     fprintf( stderr, ", dpi_context=%08x", req->dpi_context );
     fprintf( stderr, ", style=%08x", req->style );
@@ -1689,7 +1711,6 @@ static void dump_create_window_reply( const struct create_window_reply *req )
     fprintf( stderr, ", owner=%08x", req->owner );
     fprintf( stderr, ", extra=%d", req->extra );
     dump_uint64( ", class_ptr=", &req->class_ptr );
-    fprintf( stderr, ", dpi_context=%08x", req->dpi_context );
 }
 
 static void dump_destroy_window_request( const struct destroy_window_request *req )
@@ -1723,37 +1744,36 @@ static void dump_set_window_owner_reply( const struct set_window_owner_reply *re
 static void dump_get_window_info_request( const struct get_window_info_request *req )
 {
     fprintf( stderr, " handle=%08x", req->handle );
+    fprintf( stderr, ", offset=%d", req->offset );
+    fprintf( stderr, ", size=%u", req->size );
 }
 
 static void dump_get_window_info_reply( const struct get_window_info_reply *req )
 {
     fprintf( stderr, " last_active=%08x", req->last_active );
     fprintf( stderr, ", is_unicode=%d", req->is_unicode );
-    fprintf( stderr, ", dpi_context=%08x", req->dpi_context );
+    dump_uint64( ", info=", &req->info );
+}
+
+static void dump_init_window_info_request( const struct init_window_info_request *req )
+{
+    fprintf( stderr, " handle=%08x", req->handle );
+    fprintf( stderr, ", style=%08x", req->style );
+    fprintf( stderr, ", ex_style=%08x", req->ex_style );
+    fprintf( stderr, ", is_unicode=%d", req->is_unicode );
 }
 
 static void dump_set_window_info_request( const struct set_window_info_request *req )
 {
-    fprintf( stderr, " flags=%04x", req->flags );
-    fprintf( stderr, ", is_unicode=%d", req->is_unicode );
-    fprintf( stderr, ", handle=%08x", req->handle );
-    fprintf( stderr, ", style=%08x", req->style );
-    fprintf( stderr, ", ex_style=%08x", req->ex_style );
-    fprintf( stderr, ", extra_size=%u", req->extra_size );
-    dump_uint64( ", instance=", &req->instance );
-    dump_uint64( ", user_data=", &req->user_data );
-    dump_uint64( ", extra_value=", &req->extra_value );
-    fprintf( stderr, ", extra_offset=%d", req->extra_offset );
+    fprintf( stderr, " handle=%08x", req->handle );
+    fprintf( stderr, ", offset=%d", req->offset );
+    fprintf( stderr, ", size=%u", req->size );
+    dump_uint64( ", new_info=", &req->new_info );
 }
 
 static void dump_set_window_info_reply( const struct set_window_info_reply *req )
 {
-    fprintf( stderr, " old_style=%08x", req->old_style );
-    fprintf( stderr, ", old_ex_style=%08x", req->old_ex_style );
-    dump_uint64( ", old_instance=", &req->old_instance );
-    dump_uint64( ", old_user_data=", &req->old_user_data );
-    dump_uint64( ", old_extra_value=", &req->old_extra_value );
-    dump_uint64( ", old_id=", &req->old_id );
+    dump_uint64( " old_info=", &req->old_info );
 }
 
 static void dump_set_parent_request( const struct set_parent_request *req )
@@ -1766,7 +1786,6 @@ static void dump_set_parent_reply( const struct set_parent_reply *req )
 {
     fprintf( stderr, " old_parent=%08x", req->old_parent );
     fprintf( stderr, ", full_parent=%08x", req->full_parent );
-    fprintf( stderr, ", dpi_context=%08x", req->dpi_context );
 }
 
 static void dump_get_window_parents_request( const struct get_window_parents_request *req )
@@ -3528,6 +3547,8 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_delete_atom_request,
     (dump_func)dump_find_atom_request,
     (dump_func)dump_get_atom_information_request,
+    (dump_func)dump_add_user_atom_request,
+    (dump_func)dump_get_user_atom_name_request,
     (dump_func)dump_get_msg_queue_handle_request,
     (dump_func)dump_get_msg_queue_request,
     (dump_func)dump_set_queue_fd_request,
@@ -3562,6 +3583,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_desktop_window_request,
     (dump_func)dump_set_window_owner_request,
     (dump_func)dump_get_window_info_request,
+    (dump_func)dump_init_window_info_request,
     (dump_func)dump_set_window_info_request,
     (dump_func)dump_set_parent_request,
     (dump_func)dump_get_window_parents_request,
@@ -3831,6 +3853,8 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     NULL,
     (dump_func)dump_find_atom_reply,
     (dump_func)dump_get_atom_information_reply,
+    (dump_func)dump_add_user_atom_reply,
+    (dump_func)dump_get_user_atom_name_reply,
     (dump_func)dump_get_msg_queue_handle_reply,
     (dump_func)dump_get_msg_queue_reply,
     NULL,
@@ -3865,6 +3889,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_desktop_window_reply,
     (dump_func)dump_set_window_owner_reply,
     (dump_func)dump_get_window_info_reply,
+    NULL,
     (dump_func)dump_set_window_info_reply,
     (dump_func)dump_set_parent_reply,
     (dump_func)dump_get_window_parents_reply,
@@ -4134,6 +4159,8 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "delete_atom",
     "find_atom",
     "get_atom_information",
+    "add_user_atom",
+    "get_user_atom_name",
     "get_msg_queue_handle",
     "get_msg_queue",
     "set_queue_fd",
@@ -4168,6 +4195,7 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "get_desktop_window",
     "set_window_owner",
     "get_window_info",
+    "init_window_info",
     "set_window_info",
     "set_parent",
     "get_window_parents",
@@ -4456,7 +4484,6 @@ static const struct
     { "USER_APC",                    STATUS_USER_APC },
     { "USER_MAPPED_FILE",            STATUS_USER_MAPPED_FILE },
     { "VOLUME_DISMOUNTED",           STATUS_VOLUME_DISMOUNTED },
-    { "WAS_LOCKED",                  STATUS_WAS_LOCKED },
     { "WSAEACCES",                   0xc0010000 | WSAEACCES },
     { "WSAEADDRINUSE",               0xc0010000 | WSAEADDRINUSE },
     { "WSAEADDRNOTAVAIL",            0xc0010000 | WSAEADDRNOTAVAIL },

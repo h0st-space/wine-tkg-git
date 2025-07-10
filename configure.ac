@@ -47,7 +47,6 @@ AC_ARG_WITH(netapi,    AS_HELP_STRING([--without-netapi],[do not use the Samba N
 AC_ARG_WITH(opencl,    AS_HELP_STRING([--without-opencl],[do not use OpenCL]),
             [if test "x$withval" = "xno"; then ac_cv_header_CL_cl_h=no; ac_cv_header_CL_opencl_h=no; fi])
 AC_ARG_WITH(opengl,    AS_HELP_STRING([--without-opengl],[do not use OpenGL]))
-AC_ARG_WITH(osmesa,     AS_HELP_STRING([--without-osmesa],[do not use the OSMesa library]))
 AC_ARG_WITH(oss,       AS_HELP_STRING([--without-oss],[do not use the OSS sound support]))
 AC_ARG_WITH(pcap,      AS_HELP_STRING([--without-pcap],[do not use the Packet Capture library]),
             [if test "x$withval" = "xno"; then ac_cv_header_pcap_pcap_h=no; fi])
@@ -374,6 +373,7 @@ AS_VAR_SET_IF([enable_archs],
      do
          case $arch in
            i386|x86_64|arm|aarch64|arm64ec) cross_archs="$cross_archs $arch" ;;
+           no|none) PE_ARCHS=none ;;
            *) AC_MSG_ERROR([Unknown cross-compilation architecture '$arch']) ;;
          esac
      done],
@@ -381,6 +381,8 @@ AS_VAR_SET_IF([enable_archs],
      then
          test $HOST_ARCH = unknown || cross_archs=$HOST_ARCH
      fi])
+
+AS_VAR_IF([PE_ARCHS],[none],[cross_archs=])
 
 saved_CC=$CC
 saved_CFLAGS=$CFLAGS
@@ -545,6 +547,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     WINE_TRY_PE_CFLAGS([-Werror=unknown-warning-option],[CFLAGS="$CFLAGS -Werror=unknown-warning-option"])
     WINE_TRY_PE_CFLAGS([-Werror=unused-command-line-argument],[CFLAGS="$CFLAGS -Werror=unused-command-line-argument"])
     WINE_TRY_PE_CFLAGS([-Werror=ignored-optimization-argument],[CFLAGS="$CFLAGS -Werror=ignored-optimization-argument"])
+    WINE_TRY_PE_CFLAGS([-Werror=unsupported-floating-point-opt],[CFLAGS="$CFLAGS -Werror=unsupported-floating-point-opt"])
     WINE_TRY_PE_CFLAGS([-Wdeclaration-after-statement])
     WINE_TRY_PE_CFLAGS([-Wempty-body])
     WINE_TRY_PE_CFLAGS([-Wignored-qualifiers])
@@ -563,6 +566,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     WINE_TRY_PE_CFLAGS([-Wenum-enum-conversion],[:],WINE_TRY_PE_CFLAGS([-Wenum-conversion]))
     WINE_TRY_PE_CFLAGS([-ffunction-sections])
     WINE_TRY_PE_CFLAGS([-fasync-exceptions -DMIN_CLANG_VERSION=19], AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -fasync-exceptions"]))
+    WINE_TRY_PE_CFLAGS([-ffp-exception-behavior=maytrap])
 
     dnl clang had broken -fms-hotpatch support before version 18 (https://github.com/llvm/llvm-project/pull/77245)
     WINE_TRY_PE_CFLAGS([-fms-hotpatch -DMIN_CLANG_VERSION=18],
@@ -927,7 +931,6 @@ case $host_os in
     AC_SUBST(COREFOUNDATION_LIBS,"-framework CoreFoundation")
     AC_SUBST(DISKARBITRATION_LIBS,"-framework DiskArbitration -framework CoreFoundation")
     AC_SUBST(IOKIT_LIBS,"-framework IOKit -framework CoreFoundation")
-    AC_SUBST(METAL_LIBS,"-framework Metal")
     AC_SUBST(APPLICATIONSERVICES_LIBS,"-framework ApplicationServices")
     AC_SUBST(CORESERVICES_LIBS,"-framework CoreServices")
     AC_SUBST(APPKIT_LIBS,"-framework AppKit")
@@ -977,13 +980,13 @@ case $host_os in
     fi
 
     dnl Check for MTLDevice registryID property
-    AC_MSG_CHECKING([whether MTLDevice protocol supports registryID property])
     AC_LANG_PUSH([Objective C])
-    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <Metal/Metal.h>]], [[id<MTLDevice> device; device.registryID;]])],
-                          [AC_MSG_RESULT(yes)
-                           AC_DEFINE(HAVE_MTLDEVICE_REGISTRYID, 1, [Define if MTLDevice protocol has registryID property.])],
-                          [AC_MSG_RESULT(no)])
+    AC_CACHE_CHECK([whether MTLDevice protocol supports registryID property], ac_cv_mtldevice_registryid,
+                   [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <Metal/Metal.h>]], [[id<MTLDevice> device; device.registryID;]])],
+                                      [ac_cv_mtldevice_registryid=yes],
+                                      [ac_cv_mtldevice_registryid=no])])
     AC_LANG_POP([Objective C])
+    test $ac_cv_mtldevice_registryid != yes || AC_DEFINE(HAVE_MTLDEVICE_REGISTRYID, 1, [Define if MTLDevice protocol has registryID property.])
 
     UNIXLDFLAGS="-dynamiclib -install_name @rpath/\$(UNIXLIB) -Wl,-rpath,@loader_path\/"
     AC_SUBST(WINELOADER_DEPENDS,"wine_info.plist")
@@ -1395,12 +1398,6 @@ This probably prevents linking to OpenGL. Try deleting the file and restarting c
                             fi],
 			    $X_LIBS -lm -dylib_file /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib)],
 		     $X_LIBS -lm)
-        if test "x$with_osmesa" != "xno"
-        then
-            WINE_CHECK_SONAME(OSMesa,OSMesaGetProcAddress,,,[$X_LIBS -lm])
-            WINE_NOTICE_WITH(osmesa,[test "x$ac_cv_lib_soname_OSMesa" = "x"],
-                             [libOSMesa ${notice_platform}development files not found (or too old), OpenGL rendering in bitmaps won't be supported.])
-        fi
     fi
     WINE_WARNING_WITH(opengl,[test -n "$opengl_msg"],[$opengl_msg
 OpenGL and Direct3D won't be supported.])
@@ -1700,7 +1697,7 @@ WINE_NOTICE_WITH(ffmpeg,[test "x$FFMPEG_LIBS" = x],
 dnl **** Check for gstreamer ****
 if test "x$with_gstreamer" != "xno"
 then
-    WINE_PACKAGE_FLAGS(GSTREAMER,[gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0],,,,
+    WINE_PACKAGE_FLAGS(GSTREAMER,[gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0 gstreamer-gl-1.0],,,,
         [AC_CHECK_HEADER([gst/gst.h],
             [AC_MSG_CHECKING([whether gint64 defined by gst/gst.h is indeed 64-bit])
               AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <gst/gst.h>]],
@@ -2077,7 +2074,13 @@ fi
 
 dnl **** Platform-specific checks ****
 
-AC_SUBST(WINELOADER_PROGRAMS,"wine")
+case "$HOST_ARCH,$PE_ARCHS" in
+  x86_64,i386) wine_binary="wine" ;;
+  x86_64,*) wine_binary="wine64" ;;
+  *) wine_binary="wine" ;;
+esac
+test "$wine_binary" = wine || WINE_IGNORE_FILE(loader/wine)
+AC_SUBST(WINELOADER_PROGRAMS,"$wine_binary")
 
 case $host_os in
   linux*)
@@ -2090,7 +2093,8 @@ esac
 
 if test "$wine_use_preloader" = "yes"
 then
-  WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS wine-preloader"
+  test "$wine_binary" = wine || WINE_IGNORE_FILE(loader/wine-preloader)
+  WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS $wine_binary-preloader"
   AC_DEFINE(HAVE_WINE_PRELOADER, 1, [Define to 1 if the Wine preloader is being used.])
 fi
 
@@ -2482,6 +2486,7 @@ WINE_CONFIG_MAKEFILE(dlls/avifil32/tests)
 WINE_CONFIG_MAKEFILE(dlls/avifile.dll16)
 WINE_CONFIG_MAKEFILE(dlls/avrt)
 WINE_CONFIG_MAKEFILE(dlls/bcp47langs)
+WINE_CONFIG_MAKEFILE(dlls/bcp47langs/tests)
 WINE_CONFIG_MAKEFILE(dlls/bcrypt)
 WINE_CONFIG_MAKEFILE(dlls/bcrypt/tests)
 WINE_CONFIG_MAKEFILE(dlls/bcryptprimitives)
@@ -2717,6 +2722,8 @@ WINE_CONFIG_MAKEFILE(dlls/dxdiagn)
 WINE_CONFIG_MAKEFILE(dlls/dxdiagn/tests)
 WINE_CONFIG_MAKEFILE(dlls/dxgi)
 WINE_CONFIG_MAKEFILE(dlls/dxgi/tests)
+WINE_CONFIG_MAKEFILE(dlls/dxgkrnl.sys)
+WINE_CONFIG_MAKEFILE(dlls/dxgmms1.sys)
 WINE_CONFIG_MAKEFILE(dlls/dxtrans)
 WINE_CONFIG_MAKEFILE(dlls/dxva2)
 WINE_CONFIG_MAKEFILE(dlls/dxva2/tests)
@@ -2798,6 +2805,7 @@ WINE_CONFIG_MAKEFILE(dlls/iphlpapi)
 WINE_CONFIG_MAKEFILE(dlls/iphlpapi/tests)
 WINE_CONFIG_MAKEFILE(dlls/iprop)
 WINE_CONFIG_MAKEFILE(dlls/ir50_32)
+WINE_CONFIG_MAKEFILE(dlls/ir50_32/tests)
 WINE_CONFIG_MAKEFILE(dlls/irprops.cpl)
 WINE_CONFIG_MAKEFILE(dlls/itircl)
 WINE_CONFIG_MAKEFILE(dlls/itss)
@@ -3145,6 +3153,7 @@ WINE_CONFIG_MAKEFILE(dlls/setupapi/tests)
 WINE_CONFIG_MAKEFILE(dlls/setupx.dll16)
 WINE_CONFIG_MAKEFILE(dlls/sfc)
 WINE_CONFIG_MAKEFILE(dlls/sfc_os)
+WINE_CONFIG_MAKEFILE(dlls/sharedgpures.sys)
 WINE_CONFIG_MAKEFILE(dlls/shcore)
 WINE_CONFIG_MAKEFILE(dlls/shcore/tests)
 WINE_CONFIG_MAKEFILE(dlls/shdoclc)
@@ -3270,6 +3279,7 @@ WINE_CONFIG_MAKEFILE(dlls/wevtsvc)
 WINE_CONFIG_MAKEFILE(dlls/wiaservc)
 WINE_CONFIG_MAKEFILE(dlls/wiaservc/tests)
 WINE_CONFIG_MAKEFILE(dlls/wimgapi)
+WINE_CONFIG_MAKEFILE(dlls/win32k.sys)
 WINE_CONFIG_MAKEFILE(dlls/win32s16.dll16)
 WINE_CONFIG_MAKEFILE(dlls/win32u)
 WINE_CONFIG_MAKEFILE(dlls/win32u/tests)
@@ -3504,6 +3514,7 @@ WINE_CONFIG_MAKEFILE(po)
 WINE_CONFIG_MAKEFILE(programs/arp)
 WINE_CONFIG_MAKEFILE(programs/aspnet_regiis)
 WINE_CONFIG_MAKEFILE(programs/attrib)
+WINE_CONFIG_MAKEFILE(programs/belauncher)
 WINE_CONFIG_MAKEFILE(programs/cabarc)
 WINE_CONFIG_MAKEFILE(programs/cacls)
 WINE_CONFIG_MAKEFILE(programs/certutil)
@@ -3736,7 +3747,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-10.9.r1.gdf97d6c3\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-10.11.r2.gd102a326\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.nfo:

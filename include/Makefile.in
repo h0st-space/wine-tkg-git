@@ -231,10 +231,13 @@ SOURCES = \
 	ddstream.idl \
 	delayloadhandler.h \
 	devenum.idl \
+	devfiltertypes.h \
 	devguid.h \
 	devicetopology.idl \
 	devpkey.h \
 	devpropdef.h \
+	devquery.h \
+	devquerydef.h \
 	dhcpcsdk.h \
 	dhtmldid.h \
 	dhtmled.idl \
@@ -312,6 +315,8 @@ SOURCES = \
 	dxvahd.idl \
 	dyngraph.idl \
 	endpointvolume.idl \
+	errhandlingapi.h \
+	errlup.idl \
 	errorrep.h \
 	errors.h \
 	errrec.idl \
@@ -859,7 +864,9 @@ SOURCES = \
 	windows.applicationmodel.idl \
 	windows.data.json.idl \
 	windows.data.xml.dom.idl \
+	windows.devices.bluetooth.genericattributeprofile.idl \
 	windows.devices.bluetooth.idl \
+	windows.devices.bluetooth.rfcomm.idl \
 	windows.devices.enumeration.idl \
 	windows.devices.geolocation.idl \
 	windows.devices.haptics.idl \
@@ -897,6 +904,7 @@ SOURCES = \
 	windows.media.speechsynthesis.idl \
 	windows.networking.connectivity.idl \
 	windows.networking.idl \
+	windows.networking.sockets.idl \
 	windows.perception.spatial.idl \
 	windows.perception.spatial.surfaces.idl \
 	windows.security.authentication.onlineid.idl \

@@ -120,6 +120,8 @@ DECL_HANDLER(add_atom);
 DECL_HANDLER(delete_atom);
 DECL_HANDLER(find_atom);
 DECL_HANDLER(get_atom_information);
+DECL_HANDLER(add_user_atom);
+DECL_HANDLER(get_user_atom_name);
 DECL_HANDLER(get_msg_queue_handle);
 DECL_HANDLER(get_msg_queue);
 DECL_HANDLER(set_queue_fd);
@@ -154,6 +156,7 @@ DECL_HANDLER(destroy_window);
 DECL_HANDLER(get_desktop_window);
 DECL_HANDLER(set_window_owner);
 DECL_HANDLER(get_window_info);
+DECL_HANDLER(init_window_info);
 DECL_HANDLER(set_window_info);
 DECL_HANDLER(set_parent);
 DECL_HANDLER(get_window_parents);
@@ -423,6 +426,8 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_delete_atom,
     (req_handler)req_find_atom,
     (req_handler)req_get_atom_information,
+    (req_handler)req_add_user_atom,
+    (req_handler)req_get_user_atom_name,
     (req_handler)req_get_msg_queue_handle,
     (req_handler)req_get_msg_queue,
     (req_handler)req_set_queue_fd,
@@ -457,6 +462,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_desktop_window,
     (req_handler)req_set_window_owner,
     (req_handler)req_get_window_info,
+    (req_handler)req_init_window_info,
     (req_handler)req_set_window_info,
     (req_handler)req_set_parent,
     (req_handler)req_get_window_parents,
@@ -629,7 +635,7 @@ C_ASSERT( sizeof(object_id_t) == 8 );
 C_ASSERT( sizeof(process_id_t) == 4 );
 C_ASSERT( sizeof(short int) == 2 );
 C_ASSERT( sizeof(struct async_data) == 40 );
-C_ASSERT( sizeof(struct context_data) == 1728 );
+C_ASSERT( sizeof(struct context_data) == 1720 );
 C_ASSERT( sizeof(struct cursor_pos) == 24 );
 C_ASSERT( sizeof(struct filesystem_event) == 12 );
 C_ASSERT( sizeof(struct generic_map) == 16 );
@@ -1298,6 +1304,13 @@ C_ASSERT( offsetof(struct get_atom_information_reply, count) == 8 );
 C_ASSERT( offsetof(struct get_atom_information_reply, pinned) == 12 );
 C_ASSERT( offsetof(struct get_atom_information_reply, total) == 16 );
 C_ASSERT( sizeof(struct get_atom_information_reply) == 24 );
+C_ASSERT( sizeof(struct add_user_atom_request) == 16 );
+C_ASSERT( offsetof(struct add_user_atom_reply, atom) == 8 );
+C_ASSERT( sizeof(struct add_user_atom_reply) == 16 );
+C_ASSERT( offsetof(struct get_user_atom_name_request, atom) == 12 );
+C_ASSERT( sizeof(struct get_user_atom_name_request) == 16 );
+C_ASSERT( offsetof(struct get_user_atom_name_reply, total) == 8 );
+C_ASSERT( sizeof(struct get_user_atom_name_reply) == 16 );
 C_ASSERT( sizeof(struct get_msg_queue_handle_request) == 16 );
 C_ASSERT( offsetof(struct get_msg_queue_handle_reply, handle) == 8 );
 C_ASSERT( sizeof(struct get_msg_queue_handle_reply) == 16 );
@@ -1459,18 +1472,18 @@ C_ASSERT( sizeof(struct set_named_pipe_info_request) == 24 );
 C_ASSERT( offsetof(struct create_window_request, parent) == 12 );
 C_ASSERT( offsetof(struct create_window_request, owner) == 16 );
 C_ASSERT( offsetof(struct create_window_request, atom) == 20 );
-C_ASSERT( offsetof(struct create_window_request, instance) == 24 );
-C_ASSERT( offsetof(struct create_window_request, dpi_context) == 32 );
-C_ASSERT( offsetof(struct create_window_request, style) == 36 );
-C_ASSERT( offsetof(struct create_window_request, ex_style) == 40 );
-C_ASSERT( sizeof(struct create_window_request) == 48 );
+C_ASSERT( offsetof(struct create_window_request, class_instance) == 24 );
+C_ASSERT( offsetof(struct create_window_request, instance) == 32 );
+C_ASSERT( offsetof(struct create_window_request, dpi_context) == 40 );
+C_ASSERT( offsetof(struct create_window_request, style) == 44 );
+C_ASSERT( offsetof(struct create_window_request, ex_style) == 48 );
+C_ASSERT( sizeof(struct create_window_request) == 56 );
 C_ASSERT( offsetof(struct create_window_reply, handle) == 8 );
 C_ASSERT( offsetof(struct create_window_reply, parent) == 12 );
 C_ASSERT( offsetof(struct create_window_reply, owner) == 16 );
 C_ASSERT( offsetof(struct create_window_reply, extra) == 20 );
 C_ASSERT( offsetof(struct create_window_reply, class_ptr) == 24 );
-C_ASSERT( offsetof(struct create_window_reply, dpi_context) == 32 );
-C_ASSERT( sizeof(struct create_window_reply) == 40 );
+C_ASSERT( sizeof(struct create_window_reply) == 32 );
 C_ASSERT( offsetof(struct destroy_window_request, handle) == 12 );
 C_ASSERT( sizeof(struct destroy_window_request) == 16 );
 C_ASSERT( offsetof(struct get_desktop_window_request, force) == 12 );
@@ -1485,36 +1498,32 @@ C_ASSERT( offsetof(struct set_window_owner_reply, full_owner) == 8 );
 C_ASSERT( offsetof(struct set_window_owner_reply, prev_owner) == 12 );
 C_ASSERT( sizeof(struct set_window_owner_reply) == 16 );
 C_ASSERT( offsetof(struct get_window_info_request, handle) == 12 );
-C_ASSERT( sizeof(struct get_window_info_request) == 16 );
+C_ASSERT( offsetof(struct get_window_info_request, offset) == 16 );
+C_ASSERT( offsetof(struct get_window_info_request, size) == 20 );
+C_ASSERT( sizeof(struct get_window_info_request) == 24 );
 C_ASSERT( offsetof(struct get_window_info_reply, last_active) == 8 );
 C_ASSERT( offsetof(struct get_window_info_reply, is_unicode) == 12 );
-C_ASSERT( offsetof(struct get_window_info_reply, dpi_context) == 16 );
+C_ASSERT( offsetof(struct get_window_info_reply, info) == 16 );
 C_ASSERT( sizeof(struct get_window_info_reply) == 24 );
-C_ASSERT( offsetof(struct set_window_info_request, flags) == 12 );
-C_ASSERT( offsetof(struct set_window_info_request, is_unicode) == 14 );
-C_ASSERT( offsetof(struct set_window_info_request, handle) == 16 );
-C_ASSERT( offsetof(struct set_window_info_request, style) == 20 );
-C_ASSERT( offsetof(struct set_window_info_request, ex_style) == 24 );
-C_ASSERT( offsetof(struct set_window_info_request, extra_size) == 28 );
-C_ASSERT( offsetof(struct set_window_info_request, instance) == 32 );
-C_ASSERT( offsetof(struct set_window_info_request, user_data) == 40 );
-C_ASSERT( offsetof(struct set_window_info_request, extra_value) == 48 );
-C_ASSERT( offsetof(struct set_window_info_request, extra_offset) == 56 );
-C_ASSERT( sizeof(struct set_window_info_request) == 64 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_style) == 8 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_ex_style) == 12 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_instance) == 16 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_user_data) == 24 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_extra_value) == 32 );
-C_ASSERT( offsetof(struct set_window_info_reply, old_id) == 40 );
-C_ASSERT( sizeof(struct set_window_info_reply) == 48 );
+C_ASSERT( offsetof(struct init_window_info_request, handle) == 12 );
+C_ASSERT( offsetof(struct init_window_info_request, style) == 16 );
+C_ASSERT( offsetof(struct init_window_info_request, ex_style) == 20 );
+C_ASSERT( offsetof(struct init_window_info_request, is_unicode) == 24 );
+C_ASSERT( sizeof(struct init_window_info_request) == 32 );
+C_ASSERT( sizeof(struct init_window_info_reply) == 8 );
+C_ASSERT( offsetof(struct set_window_info_request, handle) == 12 );
+C_ASSERT( offsetof(struct set_window_info_request, offset) == 16 );
+C_ASSERT( offsetof(struct set_window_info_request, size) == 20 );
+C_ASSERT( offsetof(struct set_window_info_request, new_info) == 24 );
+C_ASSERT( sizeof(struct set_window_info_request) == 32 );
+C_ASSERT( offsetof(struct set_window_info_reply, old_info) == 8 );
+C_ASSERT( sizeof(struct set_window_info_reply) == 16 );
 C_ASSERT( offsetof(struct set_parent_request, handle) == 12 );
 C_ASSERT( offsetof(struct set_parent_request, parent) == 16 );
 C_ASSERT( sizeof(struct set_parent_request) == 24 );
 C_ASSERT( offsetof(struct set_parent_reply, old_parent) == 8 );
 C_ASSERT( offsetof(struct set_parent_reply, full_parent) == 12 );
-C_ASSERT( offsetof(struct set_parent_reply, dpi_context) == 16 );
-C_ASSERT( sizeof(struct set_parent_reply) == 24 );
+C_ASSERT( sizeof(struct set_parent_reply) == 16 );
 C_ASSERT( offsetof(struct get_window_parents_request, handle) == 12 );
 C_ASSERT( sizeof(struct get_window_parents_request) == 16 );
 C_ASSERT( offsetof(struct get_window_parents_reply, count) == 8 );

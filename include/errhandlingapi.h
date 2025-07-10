@@ -1,7 +1,5 @@
 /*
- * Shared Resource/DllGetVersion version information
- *
- * Copyright (C) 2004 Robert Shearman
+ * Copyright 2025 Zhiyi Zhang for CodeWeavers
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -18,8 +16,17 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-/* please keep in sync with shell32.rc values */
-#define WINE_FILEVERSION_MAJOR         6
-#define WINE_FILEVERSION_MINOR         0
-#define WINE_FILEVERSION_BUILD      2900
-#define WINE_FILEVERSION_PLATFORMID 6242
+#ifndef _ERRHANDLING_H_
+#define _ERRHANDLING_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+WINBASEAPI VOID WINAPI RaiseFailFastException(EXCEPTION_RECORD *record, CONTEXT *context, DWORD flags);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _ERRHANDLING_H_ */

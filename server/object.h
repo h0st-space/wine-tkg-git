@@ -92,7 +92,7 @@ struct object_ops
     /* sets the security descriptor of the object */
     int (*set_sd)( struct object *, const struct security_descriptor *, unsigned int );
     /* get the object full name */
-    WCHAR *(*get_full_name)(struct object *, data_size_t *);
+    WCHAR *(*get_full_name)(struct object *, data_size_t, data_size_t *);
     /* lookup a name if an object has a namespace */
     struct object *(*lookup_name)(struct object *, struct unicode_str *,unsigned int,struct object *);
     /* link an object's name into a parent object */
@@ -149,7 +149,7 @@ extern void *memdup( const void *data, size_t len ) __WINE_ALLOC_SIZE(2) __WINE_
 extern void *alloc_object( const struct object_ops *ops );
 extern void namespace_add( struct namespace *namespace, struct object_name *ptr );
 extern const WCHAR *get_object_name( struct object *obj, data_size_t *len );
-extern WCHAR *default_get_full_name( struct object *obj, data_size_t *ret_len ) __WINE_DEALLOC(free) __WINE_MALLOC;
+extern WCHAR *default_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len ) __WINE_DEALLOC(free) __WINE_MALLOC;
 extern void dump_object_name( struct object *obj );
 extern struct object *lookup_named_object( struct object *root, const struct unicode_str *name,
                                            unsigned int attr, struct unicode_str *name_left );
@@ -181,7 +181,7 @@ extern struct security_descriptor *set_sd_from_token_internal( const struct secu
                                                                unsigned int set_info, struct token *token );
 extern int set_sd_defaults_from_token( struct object *obj, const struct security_descriptor *sd,
                                        unsigned int set_info, struct token *token );
-extern WCHAR *no_get_full_name( struct object *obj, data_size_t *ret_len );
+extern WCHAR *no_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len );
 extern struct object *no_lookup_name( struct object *obj, struct unicode_str *name,
                                       unsigned int attributes, struct object *root );
 extern int no_link_name( struct object *obj, struct object_name *name, struct object *parent );
@@ -292,10 +292,17 @@ extern void init_signals(void);
 
 /* atom functions */
 
-extern atom_t add_global_atom( struct winstation *winstation, const struct unicode_str *str );
-extern atom_t find_global_atom( struct winstation *winstation, const struct unicode_str *str );
-extern int grab_global_atom( struct winstation *winstation, atom_t atom );
-extern void release_global_atom( struct winstation *winstation, atom_t atom );
+extern struct object *create_atom_table(void);
+extern void set_global_atom_table( struct object *obj );
+extern void set_user_atom_table( struct object *obj );
+
+struct atom_table;
+extern struct atom_table *get_global_atom_table(void);
+extern struct atom_table *get_user_atom_table(void);
+extern atom_t add_atom( struct atom_table *table, const struct unicode_str *str );
+extern atom_t find_atom( struct atom_table *table, const struct unicode_str *str );
+extern int grab_atom( struct atom_table *table, atom_t atom );
+extern void release_atom( struct atom_table *table, atom_t atom );
 
 /* directory functions */
 

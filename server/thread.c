@@ -654,7 +654,7 @@ static void dump_thread( struct object *obj, int verbose )
 static int thread_signaled( struct object *obj, struct wait_queue_entry *entry )
 {
     struct thread *mythread = (struct thread *)obj;
-    return mythread->state == TERMINATED && !mythread->exit_poll;
+    return (mythread->state == TERMINATED);
 }
 
 static unsigned int thread_map_access( struct object *obj, unsigned int access )
@@ -1556,7 +1556,8 @@ void kill_thread( struct thread *thread, int violent_death )
         send_thread_signal( thread, SIGQUIT );
         check_terminated( thread );
     }
-    else wake_up( &thread->obj, 0 );
+    else
+        wake_up( &thread->obj, 0 );
     cleanup_thread( thread );
     remove_process_thread( thread->process, thread );
     release_object( thread );

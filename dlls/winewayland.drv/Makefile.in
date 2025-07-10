@@ -12,7 +12,6 @@ SOURCES = \
 	opengl.c \
 	pointer-constraints-unstable-v1.xml \
 	relative-pointer-unstable-v1.xml \
-	tablet-v2.xml \
 	text-input-unstable-v3.xml \
 	version.rc \
 	viewporter.xml \
