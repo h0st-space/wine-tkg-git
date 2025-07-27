@@ -122,7 +122,10 @@ static HRESULT WINAPI connection_QueryInterface( _Connection *iface, REFIID riid
 
     *obj = NULL;
 
-    if (IsEqualGUID( riid, &IID__Connection ) || IsEqualGUID( riid, &IID_IDispatch ) ||
+    if (IsEqualGUID( riid, &IID__Connection ) ||
+        IsEqualGUID( riid, &IID_Connection15) ||
+        IsEqualGUID( riid, &IID__ADO) ||
+        IsEqualGUID( riid, &IID_IDispatch ) ||
         IsEqualGUID( riid, &IID_IUnknown ))
     {
         *obj = iface;
@@ -269,8 +272,10 @@ static HRESULT WINAPI connection_put_ConnectionTimeout( _Connection *iface, LONG
 
 static HRESULT WINAPI connection_get_Version( _Connection *iface, BSTR *str )
 {
-    FIXME( "%p, %p\n", iface, str );
-    return E_NOTIMPL;
+    struct connection *connection = impl_from_Connection( iface );
+    TRACE( "%p, %p\n", connection, str );
+    *str = SysAllocString( L"2.8" );
+    return S_OK;
 }
 
 static HRESULT WINAPI connection_Close( _Connection *iface )

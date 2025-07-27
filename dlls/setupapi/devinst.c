@@ -407,8 +407,6 @@ static LPWSTR SETUPDI_CreateSymbolicLinkPath(LPCWSTR instanceId,
         }
     }
 
-    CharLowerW(ret);
-
     return ret;
 }
 
@@ -629,30 +627,31 @@ struct PropertyMapEntry
     DWORD   regType;
     LPCSTR  nameA;
     LPCWSTR nameW;
+    DEVPROPTYPE devPropType;
 };
 
-#define PROPERTY_MAP_ENTRY(type, name) { type, name, L##name }
+#define PROPERTY_MAP_ENTRY(type, name, devproptype) { type, name, L##name, devproptype }
 static const struct PropertyMapEntry PropertyMap[] = {
-    PROPERTY_MAP_ENTRY(REG_SZ, "DeviceDesc"),
-    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "HardwareId"),
-    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "CompatibleIDs"),
+    PROPERTY_MAP_ENTRY(REG_SZ, "DeviceDesc", DEVPROP_TYPE_STRING),
+    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "HardwareId", DEVPROP_TYPE_STRING_LIST),
+    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "CompatibleIDs", DEVPROP_TYPE_STRING_LIST),
     { 0, NULL, NULL }, /* SPDRP_UNUSED0 */
-    PROPERTY_MAP_ENTRY(REG_SZ, "Service"),
+    PROPERTY_MAP_ENTRY(REG_SZ, "Service", DEVPROP_TYPE_STRING),
     { 0, NULL, NULL }, /* SPDRP_UNUSED1 */
     { 0, NULL, NULL }, /* SPDRP_UNUSED2 */
-    PROPERTY_MAP_ENTRY(REG_SZ, "Class"),
-    PROPERTY_MAP_ENTRY(REG_SZ, "ClassGUID"),
-    PROPERTY_MAP_ENTRY(REG_SZ, "Driver"),
-    PROPERTY_MAP_ENTRY(REG_DWORD, "ConfigFlags"),
-    PROPERTY_MAP_ENTRY(REG_SZ, "Mfg"),
-    PROPERTY_MAP_ENTRY(REG_SZ, "FriendlyName"),
-    PROPERTY_MAP_ENTRY(REG_SZ, "LocationInformation"),
-    { 0, NULL, NULL }, /* SPDRP_PHYSICAL_DEVICE_OBJECT_NAME */
-    PROPERTY_MAP_ENTRY(REG_DWORD, "Capabilities"),
-    PROPERTY_MAP_ENTRY(REG_DWORD, "UINumber"),
-    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "UpperFilters"),
-    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "LowerFilters"),
-    [SPDRP_BASE_CONTAINERID] = PROPERTY_MAP_ENTRY(REG_SZ, "ContainerId"),
+    PROPERTY_MAP_ENTRY(REG_SZ, "Class", DEVPROP_TYPE_STRING),
+    PROPERTY_MAP_ENTRY(REG_SZ, "ClassGUID", DEVPROP_TYPE_GUID),
+    PROPERTY_MAP_ENTRY(REG_SZ, "Driver", DEVPROP_TYPE_STRING),
+    PROPERTY_MAP_ENTRY(REG_DWORD, "ConfigFlags", DEVPROP_TYPE_UINT32),
+    PROPERTY_MAP_ENTRY(REG_SZ, "Mfg", DEVPROP_TYPE_STRING),
+    PROPERTY_MAP_ENTRY(REG_SZ, "FriendlyName", 0),
+    PROPERTY_MAP_ENTRY(REG_SZ, "LocationInformation", DEVPROP_TYPE_STRING),
+    { 0, NULL, NULL, DEVPROP_TYPE_STRING }, /* SPDRP_PHYSICAL_DEVICE_OBJECT_NAME */
+    PROPERTY_MAP_ENTRY(REG_DWORD, "Capabilities", DEVPROP_TYPE_INT32),
+    PROPERTY_MAP_ENTRY(REG_DWORD, "UINumber", DEVPROP_TYPE_INT32),
+    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "UpperFilters", DEVPROP_TYPE_STRING_LIST),
+    PROPERTY_MAP_ENTRY(REG_MULTI_SZ, "LowerFilters", DEVPROP_TYPE_STRING_LIST),
+    [SPDRP_BASE_CONTAINERID] = PROPERTY_MAP_ENTRY(REG_SZ, "ContainerId", DEVPROP_TYPE_GUID),
 };
 #undef PROPERTY_MAP_ENTRY
 
@@ -895,10 +894,9 @@ static struct device *create_device(struct DeviceInfoSet *set,
     return device;
 }
 
-static struct device *get_devnode_device(DEVINST devnode, HDEVINFO *set)
+static struct device *get_devnode_device(DEVINST devnode, HDEVINFO *set, SP_DEVINFO_DATA *data)
 {
-    SP_DEVINFO_DATA data = { sizeof(data) };
-
+    data->cbSize = sizeof(*data);
     *set = NULL;
     if (devnode >= devinst_table_size || !devinst_table[devnode])
     {
@@ -908,13 +906,13 @@ static struct device *get_devnode_device(DEVINST devnode, HDEVINFO *set)
 
     *set = SetupDiCreateDeviceInfoListExW(NULL, NULL, NULL, NULL);
     if (*set == INVALID_HANDLE_VALUE) return NULL;
-    if (!SetupDiOpenDeviceInfoW(*set, devinst_table[devnode], NULL, 0, &data))
+    if (!SetupDiOpenDeviceInfoW(*set, devinst_table[devnode], NULL, 0, data))
     {
         SetupDiDestroyDeviceInfoList(*set);
         *set = NULL;
         return NULL;
     }
-    return get_device(*set, &data);
+    return get_device(*set, data);
 }
 
 /***********************************************************************
@@ -3037,6 +3035,8 @@ BOOL WINAPI SetupDiGetDeviceInterfaceDetailA(HDEVINFO devinfo, SP_DEVICE_INTERFA
         else
             DeviceInterfaceDetailData->DevicePath[0] = '\0';
 
+        CharLowerA(DeviceInterfaceDetailData->DevicePath);
+
         ret = TRUE;
     }
     else
@@ -3094,6 +3094,8 @@ BOOL WINAPI SetupDiGetDeviceInterfaceDetailW(HDEVINFO devinfo, SP_DEVICE_INTERFA
             lstrcpyW(DeviceInterfaceDetailData->DevicePath, iface->symlink);
         else
             DeviceInterfaceDetailData->DevicePath[0] = '\0';
+
+        CharLowerW(DeviceInterfaceDetailData->DevicePath);
 
         ret = TRUE;
     }
@@ -4883,12 +4885,9 @@ static CONFIGRET get_device_interface_list(const GUID *class_guid, DEVINSTID_W d
 {
     const ULONG supported_flags = CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES;
 
-    BYTE iface_detail_buffer[sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) + 256 * sizeof(WCHAR)];
     SP_DEVICE_INTERFACE_DATA iface = {sizeof(iface)};
-    SP_DEVICE_INTERFACE_DETAIL_DATA_W *iface_data;
     SP_DEVINFO_DATA device = { sizeof(device) };
     ULONG query_flags = DIGCF_DEVICEINTERFACE;
-    CONFIGRET ret = CR_SUCCESS;
     unsigned int i, id_len;
     HDEVINFO set;
     ULONG needed;
@@ -4915,15 +4914,12 @@ static CONFIGRET get_device_interface_list(const GUID *class_guid, DEVINSTID_W d
     if (set == INVALID_HANDLE_VALUE)
         return CR_SUCCESS;
 
-    iface_data = (SP_DEVICE_INTERFACE_DETAIL_DATA_W *)iface_detail_buffer;
-    iface_data->cbSize = sizeof(*iface_data);
-
     p = buffer;
     for (i = 0; SetupDiEnumDeviceInterfaces(set, NULL, class_guid, i, &iface); ++i)
     {
-        ret = SetupDiGetDeviceInterfaceDetailW(set, &iface, iface_data, sizeof(iface_detail_buffer), NULL, &device);
-        if (!ret) continue;
-        id_len = wcslen(iface_data->DevicePath) + 1;
+        struct device_iface *device_iface;
+        device_iface = get_device_iface(set, &iface);
+        id_len = wcslen(device_iface->symlink) + 1;
         needed += id_len;
         if (buffer)
         {
@@ -4933,7 +4929,7 @@ static CONFIGRET get_device_interface_list(const GUID *class_guid, DEVINSTID_W d
                 *buffer = 0;
                 return CR_BUFFER_SMALL;
             }
-            memcpy(p, iface_data->DevicePath, sizeof(*p) * id_len);
+            memcpy(p, device_iface->symlink, sizeof(*p) * id_len);
             p += id_len;
         }
     }
@@ -5275,6 +5271,79 @@ BOOL WINAPI SetupDiGetDevicePropertyKeys( HDEVINFO devinfo, PSP_DEVINFO_DATA dev
     return !ret;
 }
 
+static DWORD get_device_property( struct device *device, HDEVINFO devinfo, PSP_DEVINFO_DATA device_data,
+                                  const DEVPROPKEY *prop_key, DEVPROPTYPE *prop_type, BYTE *buf, DWORD buf_size,
+                                  DWORD *req_size, DWORD flags )
+{
+    DWORD ret = ERROR_SUCCESS;
+
+    if (!prop_key)
+        return ERROR_INVALID_DATA;
+    if (!prop_type || (!buf && buf_size))
+        return ERROR_INVALID_USER_BUFFER;
+    if (flags)
+        return ERROR_INVALID_FLAGS;
+
+    if (IsEqualGUID( &prop_key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid ) && prop_key->pid >= 2)
+    {
+        DWORD reg_prop = prop_key->pid - 2, size, type;
+
+        if (reg_prop >= ARRAY_SIZE(PropertyMap) || !PropertyMap[reg_prop].devPropType)
+            return get_device_reg_property( device->key, prop_key, prop_type, buf, buf_size, req_size, flags );
+        type = PropertyMap[reg_prop].devPropType;
+        if (type == DEVPROP_TYPE_GUID)
+        {
+            WCHAR guid_str[39];
+
+            size = sizeof( GUID );
+            if (!SetupDiGetDeviceRegistryPropertyW( devinfo, device_data, reg_prop, NULL, (BYTE *)guid_str,
+                                                    sizeof( guid_str ), NULL ))
+                ret = GetLastError();
+            else if (buf_size >= sizeof( GUID ))
+            {
+                if (guid_str[0] == '{' && guid_str[37] == '}')
+                {
+                    guid_str[37] = 0;
+                    UuidFromStringW( &guid_str[1], (GUID *)buf );
+                }
+                else
+                    ERR("Invalid GUID string: %s\n", debugstr_w( guid_str ));
+            }
+            else
+                ret = ERROR_INSUFFICIENT_BUFFER;
+        }
+        else if (!SetupDiGetDeviceRegistryPropertyW( devinfo, device_data, reg_prop, NULL, buf, buf_size, &size ))
+            ret = GetLastError();
+
+        if (ret != ERROR_INVALID_DATA)
+        {
+            *prop_type = type;
+            if (req_size)
+                *req_size = size;
+        }
+        else
+            ret = ERROR_NOT_FOUND;
+    }
+    else if (IsEqualDevPropKey( *prop_key, DEVPKEY_Device_InstanceId ))
+    {
+        DWORD size = (wcslen( device->instanceId ) + 1) * sizeof( WCHAR );
+
+        *prop_type = DEVPROP_TYPE_STRING;
+        if (buf_size >= size)
+            wcscpy( (WCHAR *)buf, device->instanceId );
+        else
+            ret = ERROR_INSUFFICIENT_BUFFER;
+        if (req_size)
+            *req_size = size;
+    }
+    else if (IsEqualDevPropKey( *prop_key, DEVPKEY_Device_ContainerId ))
+        ret = get_device_property( device, devinfo, device_data, &DEVPKEY_Device_BaseContainerId, prop_type, buf,
+                                    buf_size, req_size, flags );
+    else
+        ret = get_device_reg_property( device->key, prop_key, prop_type, buf, buf_size, req_size, flags );
+    return ret;
+}
+
 /***********************************************************************
  *              SetupDiGetDevicePropertyW (SETUPAPI.@)
  */
@@ -5291,7 +5360,8 @@ BOOL WINAPI SetupDiGetDevicePropertyW(HDEVINFO devinfo, PSP_DEVINFO_DATA device_
     if (!(device = get_device(devinfo, device_data)))
         return FALSE;
 
-    ls = get_device_reg_property(device->key, prop_key, prop_type, prop_buff, prop_buff_size, required_size, flags);
+    ls = get_device_property(device, devinfo, device_data, prop_key, prop_type, prop_buff, prop_buff_size,
+                             required_size, flags);
 
     SetLastError(ls);
     return !ls;
@@ -5304,6 +5374,7 @@ CONFIGRET WINAPI CM_Get_DevNode_Property_ExW(DEVINST devnode, const DEVPROPKEY *
     BYTE *prop_buff, ULONG *prop_buff_size, ULONG flags, HMACHINE machine)
 {
     HDEVINFO set;
+    SP_DEVINFO_DATA data = { sizeof(data) };
     struct device *device;
     LSTATUS ls;
 
@@ -5316,10 +5387,11 @@ CONFIGRET WINAPI CM_Get_DevNode_Property_ExW(DEVINST devnode, const DEVPROPKEY *
     if (!prop_buff_size)
         return CR_INVALID_POINTER;
 
-    if (!(device = get_devnode_device(devnode, &set)))
+    if (!(device = get_devnode_device(devnode, &set, &data)))
         return CR_NO_SUCH_DEVINST;
 
-    ls = get_device_reg_property(device->key, prop_key, prop_type, prop_buff, *prop_buff_size, prop_buff_size, flags);
+    ls = get_device_property(device, set, &data, prop_key, prop_type, prop_buff, *prop_buff_size,
+                             prop_buff_size, flags);
     SetupDiDestroyDeviceInfoList(set);
     switch (ls)
     {

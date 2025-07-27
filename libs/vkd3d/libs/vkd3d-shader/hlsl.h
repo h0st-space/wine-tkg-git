@@ -645,12 +645,6 @@ struct hlsl_ir_function_decl
      * executed. Needed to deal with return statements in non-uniform control
      * flow, since some backends can't handle them. */
     struct hlsl_ir_var *early_return_var;
-
-    /* List of all the extern semantic variables; linked by the
-     * hlsl_ir_var.extern_entry fields. This exists as a convenience because
-     * it is often necessary to iterate all extern variables and these can be
-     * declared in as function parameters, or as the function return value. */
-    struct list extern_vars;
 };
 
 struct hlsl_ir_call
@@ -1615,7 +1609,8 @@ struct hlsl_ir_node *hlsl_block_add_unary_expr(struct hlsl_ctx *ctx, struct hlsl
 void hlsl_block_cleanup(struct hlsl_block *block);
 bool hlsl_clone_block(struct hlsl_ctx *ctx, struct hlsl_block *dst_block, const struct hlsl_block *src_block);
 
-void hlsl_dump_function(struct hlsl_ctx *ctx, const struct hlsl_ir_function_decl *func);
+void hlsl_dump_function(struct hlsl_ctx *ctx, const struct hlsl_ir_function_decl *func,
+        const char *description, const struct hlsl_block *processed_block);
 void hlsl_dump_ir_function_decl(struct hlsl_ctx *ctx,
         struct vkd3d_string_buffer *buffer, const struct hlsl_ir_function_decl *f);
 void hlsl_dump_var_default_values(const struct hlsl_ir_var *var);

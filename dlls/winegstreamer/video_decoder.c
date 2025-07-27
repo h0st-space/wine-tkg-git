@@ -176,10 +176,14 @@ static ULONG WINAPI unknown_Release(IUnknown *iface)
             IMFMediaType_Release(decoder->input_type);
         if (decoder->output_type)
             IMFMediaType_Release(decoder->output_type);
+        if (decoder->stream_type)
+            IMFMediaType_Release(decoder->stream_type);
         if (decoder->output_attributes)
             IMFAttributes_Release(decoder->output_attributes);
         if (decoder->attributes)
             IMFAttributes_Release(decoder->attributes);
+        FreeMediaType(&decoder->dmo_input_type);
+        FreeMediaType(&decoder->dmo_output_type);
         wg_sample_queue_destroy(decoder->wg_sample_queue);
         free(decoder);
     }
@@ -1422,8 +1426,8 @@ static HRESULT WINAPI media_object_Discontinuity(IMediaObject *iface, DWORD inde
 
 static HRESULT WINAPI media_object_AllocateStreamingResources(IMediaObject *iface)
 {
-    FIXME("iface %p stub!\n", iface);
-    return E_NOTIMPL;
+    TRACE("iface %p.\n", iface);
+    return S_OK;
 }
 
 static HRESULT WINAPI media_object_FreeStreamingResources(IMediaObject *iface)

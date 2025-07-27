@@ -2998,7 +2998,6 @@ struct hlsl_ir_function_decl *hlsl_new_func_decl(struct hlsl_ctx *ctx,
     decl->return_type = return_type;
     decl->parameters = *parameters;
     decl->loc = *loc;
-    list_init(&decl->extern_vars);
 
     if (!hlsl_types_are_equal(return_type, ctx->builtin_types.Void))
     {
@@ -4066,20 +4065,23 @@ static void dump_instr(struct hlsl_ctx *ctx, struct vkd3d_string_buffer *buffer,
     }
 }
 
-void hlsl_dump_function(struct hlsl_ctx *ctx, const struct hlsl_ir_function_decl *func)
+void hlsl_dump_function(struct hlsl_ctx *ctx, const struct hlsl_ir_function_decl *func,
+        const char *description, const struct hlsl_block *processed_block)
 {
     struct vkd3d_string_buffer buffer;
     size_t i;
 
     vkd3d_string_buffer_init(&buffer);
-    vkd3d_string_buffer_printf(&buffer, "Dumping function %s.\n", func->func->name);
+    vkd3d_string_buffer_printf(&buffer, "Dumping %s \"%s\".\n", description, func->func->name);
     vkd3d_string_buffer_printf(&buffer, "Function parameters:\n");
     for (i = 0; i < func->parameters.count; ++i)
     {
         dump_ir_var(ctx, &buffer, func->parameters.vars[i]);
         vkd3d_string_buffer_printf(&buffer, "\n");
     }
-    if (func->has_body)
+    if (processed_block)
+        dump_block(ctx, &buffer, processed_block);
+    else if (func->has_body)
         dump_block(ctx, &buffer, &func->body);
 
     vkd3d_string_buffer_trace(&buffer);
@@ -5009,8 +5011,8 @@ static void hlsl_ctx_cleanup(struct hlsl_ctx *ctx)
     vkd3d_free(ctx->constant_defs.regs);
 }
 
-int hlsl_compile_shader(const struct vkd3d_shader_code *hlsl, const struct vkd3d_shader_compile_info *compile_info,
-        struct vkd3d_shader_code *out, struct vkd3d_shader_message_context *message_context)
+int hlsl_compile_shader(const struct vkd3d_shader_compile_info *compile_info,
+        struct vkd3d_shader_message_context *message_context, struct vkd3d_shader_code *out)
 {
     enum vkd3d_shader_target_type target_type = compile_info->target_type;
     const struct vkd3d_shader_hlsl_source_info *hlsl_source_info;
@@ -5062,7 +5064,7 @@ int hlsl_compile_shader(const struct vkd3d_shader_code *hlsl, const struct vkd3d
     if (!hlsl_ctx_init(&ctx, compile_info, profile, message_context))
         return VKD3D_ERROR_OUT_OF_MEMORY;
 
-    if ((ret = hlsl_lexer_compile(&ctx, hlsl)) == 2)
+    if ((ret = hlsl_lexer_compile(&ctx, &compile_info->source)) == 2)
     {
         hlsl_ctx_cleanup(&ctx);
         return VKD3D_ERROR_OUT_OF_MEMORY;

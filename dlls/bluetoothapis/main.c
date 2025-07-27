@@ -35,6 +35,7 @@
 
 #include "initguid.h"
 #include "bluetoothapis.h"
+#include "bthledef.h"
 #include "bthdef.h"
 #include "bthioctl.h"
 #include "wine/winebth.h"
@@ -794,7 +795,8 @@ static void bluetooth_auth_wizard_ask_response( struct bluetooth_auth_wizard_lis
                              &params, sizeof( params ), &bytes, NULL ))
         {
             ret = ERROR_SUCCESS;
-            goto done;
+            CloseHandle( radio );
+            break;
         }
         ret = GetLastError();
         CloseHandle( radio );
