@@ -25,7 +25,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -54,23 +53,14 @@ struct type_descr semaphore_type =
 struct semaphore
 {
     struct object  obj;    /* object header */
-    union
-    {
-        struct
-        {
-            unsigned int count;  /* current count */
-            unsigned int max;    /* maximum possible count */
-        } s;
-        int inproc_sync;         /* in-process synchronization object */
-    } u;
+    unsigned int   count;  /* current count */
+    unsigned int   max;    /* maximum possible count */
 };
 
 static void semaphore_dump( struct object *obj, int verbose );
 static int semaphore_signaled( struct object *obj, struct wait_queue_entry *entry );
 static void semaphore_satisfied( struct object *obj, struct wait_queue_entry *entry );
 static int semaphore_signal( struct object *obj, unsigned int access );
-static int semaphore_get_inproc_sync( struct object *obj, enum inproc_sync_type *type );
-static void semaphore_destroy( struct object *obj );
 
 static const struct object_ops semaphore_ops =
 {
@@ -80,6 +70,8 @@ static const struct object_ops semaphore_ops =
     add_queue,                     /* add_queue */
     remove_queue,                  /* remove_queue */
     semaphore_signaled,            /* signaled */
+    NULL,                          /* get_esync_fd */
+    NULL,                          /* get_fsync_idx */
     semaphore_satisfied,           /* satisfied */
     semaphore_signal,              /* signal */
     no_get_fd,                     /* get_fd */
@@ -92,9 +84,8 @@ static const struct object_ops semaphore_ops =
     default_unlink_name,           /* unlink_name */
     no_open_file,                  /* open_file */
     no_kernel_obj_list,            /* get_kernel_obj_list */
-    semaphore_get_inproc_sync,     /* get_inproc_sync */
     no_close_handle,               /* close_handle */
-    semaphore_destroy              /* destroy */
+    no_destroy                     /* destroy */
 };
 
 
@@ -114,15 +105,8 @@ static struct semaphore *create_semaphore( struct object *root, const struct uni
         if (get_error() != STATUS_OBJECT_NAME_EXISTS)
         {
             /* initialize it if it didn't already exist */
-            if (use_inproc_sync())
-            {
-                sem->u.inproc_sync = create_inproc_semaphore( initial, max );
-            }
-            else
-            {
-                sem->u.s.count = initial;
-                sem->u.s.max   = max;
-            }
+            sem->count = initial;
+            sem->max   = max;
         }
     }
     return sem;
@@ -131,20 +115,20 @@ static struct semaphore *create_semaphore( struct object *root, const struct uni
 static int release_semaphore( struct semaphore *sem, unsigned int count,
                               unsigned int *prev )
 {
-    if (prev) *prev = sem->u.s.count;
-    if (sem->u.s.count + count < sem->u.s.count || sem->u.s.count + count > sem->u.s.max)
+    if (prev) *prev = sem->count;
+    if (sem->count + count < sem->count || sem->count + count > sem->max)
     {
         set_error( STATUS_SEMAPHORE_LIMIT_EXCEEDED );
         return 0;
     }
-    else if (sem->u.s.count)
+    else if (sem->count)
     {
         /* there cannot be any thread to wake up if the count is != 0 */
-        sem->u.s.count += count;
+        sem->count += count;
     }
     else
     {
-        sem->u.s.count = count;
+        sem->count = count;
         wake_up( &sem->obj, count );
     }
     return 1;
@@ -154,22 +138,22 @@ static void semaphore_dump( struct object *obj, int verbose )
 {
     struct semaphore *sem = (struct semaphore *)obj;
     assert( obj->ops == &semaphore_ops );
-    fprintf( stderr, "Semaphore count=%d max=%d\n", sem->u.s.count, sem->u.s.max );
+    fprintf( stderr, "Semaphore count=%d max=%d\n", sem->count, sem->max );
 }
 
 static int semaphore_signaled( struct object *obj, struct wait_queue_entry *entry )
 {
     struct semaphore *sem = (struct semaphore *)obj;
     assert( obj->ops == &semaphore_ops );
-    return (sem->u.s.count > 0);
+    return (sem->count > 0);
 }
 
 static void semaphore_satisfied( struct object *obj, struct wait_queue_entry *entry )
 {
     struct semaphore *sem = (struct semaphore *)obj;
     assert( obj->ops == &semaphore_ops );
-    assert( sem->u.s.count );
-    sem->u.s.count--;
+    assert( sem->count );
+    sem->count--;
 }
 
 static int semaphore_signal( struct object *obj, unsigned int access )
@@ -183,21 +167,6 @@ static int semaphore_signal( struct object *obj, unsigned int access )
         return 0;
     }
     return release_semaphore( sem, 1, NULL );
-}
-
-static int semaphore_get_inproc_sync( struct object *obj, enum inproc_sync_type *type )
-{
-    struct semaphore *semaphore = (struct semaphore *)obj;
-
-    *type = INPROC_SYNC_SEMAPHORE;
-    return semaphore->u.inproc_sync;
-}
-
-static void semaphore_destroy( struct object *obj )
-{
-    struct semaphore *semaphore = (struct semaphore *)obj;
-
-    if (use_inproc_sync()) close( semaphore->u.inproc_sync );
 }
 
 /* create a semaphore */
@@ -254,8 +223,8 @@ DECL_HANDLER(query_semaphore)
     if ((sem = (struct semaphore *)get_handle_obj( current->process, req->handle,
                                                    SEMAPHORE_QUERY_STATE, &semaphore_ops )))
     {
-        reply->current = sem->u.s.count;
-        reply->max = sem->u.s.max;
+        reply->current = sem->count;
+        reply->max = sem->max;
         release_object( sem );
     }
 }

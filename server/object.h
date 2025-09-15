@@ -42,7 +42,6 @@ struct async;
 struct async_queue;
 struct winstation;
 struct object_type;
-struct inproc_sync;
 
 
 struct unicode_str
@@ -79,6 +78,10 @@ struct object_ops
     void (*remove_queue)(struct object *,struct wait_queue_entry *);
     /* is object signaled? */
     int  (*signaled)(struct object *,struct wait_queue_entry *);
+    /* return the esync fd for this object */
+    int (*get_esync_fd)(struct object *, enum esync_type *type);
+    /* return the fsync shm idx for this object */
+    unsigned int (*get_fsync_idx)(struct object *, enum fsync_type *type);
     /* wait satisfied */
     void (*satisfied)(struct object *,struct wait_queue_entry *);
     /* signal an object */
@@ -104,8 +107,6 @@ struct object_ops
                                 unsigned int options);
     /* return list of kernel objects */
     struct list *(*get_kernel_obj_list)(struct object *);
-    /* get a client-waitable in-process synchronization fd for this object */
-    int (*get_inproc_sync)(struct object *, enum inproc_sync_type *type);
     /* close a handle to this object */
     int (*close_handle)(struct object *,struct process *,obj_handle_t);
     /* destroy on refcount == 0 */
@@ -196,6 +197,9 @@ extern void dump_objects(void);
 extern void close_objects(void);
 #endif
 
+struct reserve *reserve_obj_associate_apc( struct process *process, obj_handle_t handle, struct object *apc );
+void reserve_obj_unbind( struct reserve *reserve );
+
 static inline void make_object_permanent( struct object *obj ) { obj->is_permanent = 1; }
 static inline void make_object_temporary( struct object *obj ) { obj->is_permanent = 0; }
 
@@ -233,17 +237,6 @@ extern void reset_event( struct event *event );
 /* mutex functions */
 
 extern void abandon_mutexes( struct thread *thread );
-
-/* in-process synchronization functions */
-
-extern int use_inproc_sync(void);
-extern int create_inproc_event( int manual_reset, int signaled );
-extern int create_inproc_mutex( thread_id_t owner, unsigned int count );
-extern int create_inproc_semaphore( unsigned int count, unsigned int max );
-extern int no_get_inproc_sync( struct object *obj, enum inproc_sync_type *type );
-extern void set_inproc_event( int event );
-extern void reset_inproc_event( int event );
-extern void abandon_inproc_mutex( thread_id_t tid, int mutex );
 
 /* serial functions */
 
@@ -301,7 +294,7 @@ extern struct atom_table *get_global_atom_table(void);
 extern struct atom_table *get_user_atom_table(void);
 extern atom_t add_atom( struct atom_table *table, const struct unicode_str *str );
 extern atom_t find_atom( struct atom_table *table, const struct unicode_str *str );
-extern int grab_atom( struct atom_table *table, atom_t atom );
+extern atom_t grab_atom( struct atom_table *table, atom_t atom );
 extern void release_atom( struct atom_table *table, atom_t atom );
 
 /* directory functions */

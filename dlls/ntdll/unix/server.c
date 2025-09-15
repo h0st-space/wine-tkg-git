@@ -83,6 +83,8 @@
 #include "wine/server.h"
 #include "wine/debug.h"
 #include "unix_private.h"
+#include "esync.h"
+#include "fsync.h"
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
@@ -405,7 +407,7 @@ static int wait_select_reply( void *cookie )
  */
 static NTSTATUS invoke_user_apc( CONTEXT *context, const struct user_apc *apc, NTSTATUS status )
 {
-    return call_user_apc_dispatcher( context, apc->args[0], apc->args[1], apc->args[2],
+    return call_user_apc_dispatcher( context, apc->flags, apc->args[0], apc->args[1], apc->args[2],
                                      wine_server_get_ptr( apc->func ), status );
 }
 
@@ -838,21 +840,6 @@ unsigned int server_wait( const union select_op *select_op, data_size_t size, UI
 }
 
 
-/* helper function to perform a server-side wait on an internal handle without
- * using the fast synchronization path */
-unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout )
-{
-    union select_op select_op;
-    UINT flags = SELECT_INTERRUPTIBLE;
-
-    if (alertable) flags |= SELECT_ALERTABLE;
-
-    select_op.wait.op = SELECT_WAIT;
-    select_op.wait.handles[0] = wine_server_obj_handle( handle );
-    return server_wait( &select_op, offsetof( union select_op, wait.handles[1] ), flags, timeout );
-}
-
-
 /***********************************************************************
  *              NtContinue  (NTDLL.@)
  */
@@ -929,7 +916,7 @@ unsigned int server_queue_process_apc( HANDLE process, const union apc_call *cal
         }
         else
         {
-            server_wait_for_object( handle, FALSE, NULL );
+            NtWaitForSingleObject( handle, FALSE, NULL );
 
             SERVER_START_REQ( get_apc_result )
             {
@@ -996,7 +983,7 @@ void wine_server_send_fd( int fd )
  *
  * Receive a file descriptor passed from the server.
  */
-int wine_server_receive_fd( obj_handle_t *handle )
+int receive_fd( obj_handle_t *handle )
 {
     struct iovec vec;
     struct msghdr msghdr;
@@ -1191,7 +1178,7 @@ int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
                 if (type) *type = reply->type;
                 if (options) *options = reply->options;
                 access = reply->access;
-                if ((fd = wine_server_receive_fd( &fd_handle )) != -1)
+                if ((fd = receive_fd( &fd_handle )) != -1)
                 {
                     assert( wine_server_ptr_handle(fd_handle) == handle );
                     *needs_close = (!reply->cacheable ||
@@ -1667,7 +1654,7 @@ size_t server_init_process(void)
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
 
     /* receive the first thread request fd on the main socket */
-    ntdll_get_thread_data()->request_fd = wine_server_receive_fd( &version );
+    ntdll_get_thread_data()->request_fd = receive_fd( &version );
 
 #ifdef SO_PASSCRED
     /* now that we hopefully received the server_pid, disable SO_PASSCRED */
@@ -1883,17 +1870,12 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE 
         return result.dup_handle.status;
     }
 
-    /* hold fd_cache_mutex to prevent the fd from being added again between the
-     * call to remove_fd_from_cache and close_handle */
     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
 
     /* always remove the cached fd; if the server request fails we'll just
      * retrieve it again */
     if (options & DUPLICATE_CLOSE_SOURCE)
-    {
         fd = remove_fd_from_cache( source );
-        close_inproc_sync_obj( source );
-    }
 
     SERVER_START_REQ( dup_handle )
     {
@@ -1959,15 +1941,17 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
     if (HandleToLong( handle ) >= ~5 && HandleToLong( handle ) <= ~0)
         return STATUS_SUCCESS;
 
-    /* hold fd_cache_mutex to prevent the fd from being added again between the
-     * call to remove_fd_from_cache and close_handle */
     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
 
     /* always remove the cached fd; if the server request fails we'll just
      * retrieve it again */
     fd = remove_fd_from_cache( handle );
 
-    close_inproc_sync_obj( handle );
+    if (do_fsync())
+        fsync_close( handle );
+
+    if (do_esync())
+        esync_close( handle );
 
     SERVER_START_REQ( close_handle )
     {

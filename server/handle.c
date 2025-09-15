@@ -126,6 +126,8 @@ static const struct object_ops handle_table_ops =
     no_add_queue,                    /* add_queue */
     NULL,                            /* remove_queue */
     NULL,                            /* signaled */
+    NULL,                            /* get_esync_fd */
+    NULL,                            /* get_fsync_idx */
     NULL,                            /* satisfied */
     no_signal,                       /* signal */
     no_get_fd,                       /* get_fd */
@@ -138,7 +140,6 @@ static const struct object_ops handle_table_ops =
     NULL,                            /* unlink_name */
     no_open_file,                    /* open_file */
     no_kernel_obj_list,              /* get_kernel_obj_list */
-    no_get_inproc_sync,              /* get_inproc_sync */
     no_close_handle,                 /* close_handle */
     handle_table_destroy             /* destroy */
 };
@@ -429,15 +430,17 @@ unsigned int close_handle( struct process *process, obj_handle_t handle )
     struct handle_table *table;
     struct handle_entry *entry;
     struct object *obj;
+    int index = handle_to_index( handle );
 
     if (!(entry = get_handle( process, handle ))) return STATUS_INVALID_HANDLE;
     if (entry->access & RESERVED_CLOSE_PROTECT) return STATUS_HANDLE_NOT_CLOSABLE;
     obj = entry->ptr;
     if (!obj->ops->close_handle( obj, process, handle )) return STATUS_HANDLE_NOT_CLOSABLE;
-    entry->ptr = NULL;
+
     table = handle_is_global(handle) ? global_table : process->handles;
-    if (entry < table->entries + table->free) table->free = entry - table->entries;
-    if (entry == table->entries + table->last) shrink_handle_table( table );
+    table->entries[index].ptr = NULL;
+    if (index < table->free) table->free = index;
+    if (index == table->last) shrink_handle_table( table );
     release_object_from_handle( obj );
     return STATUS_SUCCESS;
 }

@@ -60,6 +60,8 @@
 #include "request.h"
 #include "user.h"
 #include "security.h"
+#include "esync.h"
+#include "fsync.h"
 
 
 /* thread queues */
@@ -88,6 +90,7 @@ struct thread_apc
     struct list         entry;    /* queue linked list */
     struct thread      *caller;   /* thread that queued this apc */
     struct object      *owner;    /* object that queued this apc */
+    struct reserve     *reserve;  /* reserve object associated with apc object */
     int                 executed; /* has it been executed by the client? */
     union apc_call      call;     /* call arguments */
     union apc_result    result;   /* call results once executed */
@@ -106,6 +109,8 @@ static const struct object_ops thread_apc_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     thread_apc_signaled,        /* signaled */
+    NULL,                       /* get_esync_fd */
+    NULL,                       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -118,7 +123,6 @@ static const struct object_ops thread_apc_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
-    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     thread_apc_destroy          /* destroy */
 };
@@ -149,6 +153,8 @@ static const struct object_ops context_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     context_signaled,           /* signaled */
+    NULL,                       /* get_esync_fd */
+    NULL,                       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -161,7 +167,6 @@ static const struct object_ops context_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
-    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     no_destroy                  /* destroy */
 };
@@ -186,10 +191,11 @@ struct type_descr thread_type =
 
 static void dump_thread( struct object *obj, int verbose );
 static int thread_signaled( struct object *obj, struct wait_queue_entry *entry );
+static int thread_get_esync_fd( struct object *obj, enum esync_type *type );
+static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static unsigned int thread_map_access( struct object *obj, unsigned int access );
 static void thread_poll_event( struct fd *fd, int event );
 static struct list *thread_get_kernel_obj_list( struct object *obj );
-static int thread_get_inproc_sync( struct object *obj, enum inproc_sync_type *type );
 static void destroy_thread( struct object *obj );
 
 static const struct object_ops thread_ops =
@@ -200,6 +206,8 @@ static const struct object_ops thread_ops =
     add_queue,                  /* add_queue */
     remove_queue,               /* remove_queue */
     thread_signaled,            /* signaled */
+    thread_get_esync_fd,        /* get_esync_fd */
+    thread_get_fsync_idx,       /* get_fsync_idx */
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
@@ -212,7 +220,6 @@ static const struct object_ops thread_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     thread_get_kernel_obj_list, /* get_kernel_obj_list */
-    thread_get_inproc_sync,     /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     destroy_thread              /* destroy */
 };
@@ -398,6 +405,9 @@ static inline void init_thread_structure( struct thread *thread )
     thread->context         = NULL;
     thread->teb             = 0;
     thread->entry_point     = 0;
+    thread->esync_fd        = -1;
+    thread->esync_apc_fd    = -1;
+    thread->fsync_idx       = 0;
     thread->system_regs     = 0;
     thread->queue           = NULL;
     thread->wait            = NULL;
@@ -413,15 +423,15 @@ static inline void init_thread_structure( struct thread *thread )
     thread->exit_code       = 0;
     thread->priority        = 0;
     thread->base_priority   = 0;
+    thread->disable_boost   = 0;
     thread->suspend         = 0;
     thread->dbg_hidden      = 0;
+    thread->bypass_proc_suspend = 0;
     thread->desktop_users   = 0;
     thread->token           = NULL;
     thread->desc            = NULL;
     thread->desc_len        = 0;
     thread->exit_poll       = NULL;
-    thread->inproc_sync     = create_inproc_event( TRUE, FALSE );
-    thread->inproc_alert_event = NULL;
 
     thread->creation_time = current_time;
     thread->exit_time     = 0;
@@ -434,6 +444,12 @@ static inline void init_thread_structure( struct thread *thread )
 
     for (i = 0; i < MAX_INFLIGHT_FDS; i++)
         thread->inflight[i].server = thread->inflight[i].client = -1;
+}
+
+static inline int is_thread_suspended( struct thread *thread )
+{
+    if (thread->suspend) return 1;
+    return !thread->bypass_proc_suspend && thread->process->suspend;
 }
 
 /* check if address looks valid for a client-side data structure (TEB etc.) */
@@ -514,6 +530,7 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
     thread->process = (struct process *)grab_object( process );
     thread->desktop = 0;
     thread->affinity = process->affinity;
+    thread->disable_boost = process->disable_boost;
     if (!current) current = thread;
 
     list_add_tail( &thread_list, &thread->entry );
@@ -549,6 +566,18 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
         }
     }
 
+    if (do_fsync())
+    {
+        thread->fsync_idx = fsync_alloc_shm( 0, 0 );
+        thread->fsync_apc_idx = fsync_alloc_shm( 0, 0 );
+    }
+
+    if (do_esync())
+    {
+        thread->esync_fd = esync_create_fd( 0, 0 );
+        thread->esync_apc_fd = esync_create_fd( 0, 0 );
+    }
+
     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
     add_process_thread( thread->process, thread );
     return thread;
@@ -571,14 +600,6 @@ static struct list *thread_get_kernel_obj_list( struct object *obj )
 {
     struct thread *thread = (struct thread *)obj;
     return &thread->kernel_object;
-}
-
-static int thread_get_inproc_sync( struct object *obj, enum inproc_sync_type *type )
-{
-    struct thread *thread = (struct thread *)obj;
-
-    *type = INPROC_SYNC_MANUAL_SERVER;
-    return thread->inproc_sync;
 }
 
 /* cleanup everything that is no longer needed by a dead thread */
@@ -637,8 +658,9 @@ static void destroy_thread( struct object *obj )
     if (thread->exit_poll) remove_timeout_user( thread->exit_poll );
     if (thread->id) free_ptid( thread->id );
     if (thread->token) release_object( thread->token );
-    if (use_inproc_sync()) close( thread->inproc_sync );
-    if (thread->inproc_alert_event) release_object( thread->inproc_alert_event );
+
+    if (do_esync())
+        close( thread->esync_fd );
 }
 
 /* dump a thread on stdout for debugging purposes */
@@ -655,6 +677,20 @@ static int thread_signaled( struct object *obj, struct wait_queue_entry *entry )
 {
     struct thread *mythread = (struct thread *)obj;
     return (mythread->state == TERMINATED);
+}
+
+static int thread_get_esync_fd( struct object *obj, enum esync_type *type )
+{
+    struct thread *thread = (struct thread *)obj;
+    *type = ESYNC_MANUAL_SERVER;
+    return thread->esync_fd;
+}
+
+static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *type )
+{
+    struct thread *thread = (struct thread *)obj;
+    *type = FSYNC_MANUAL_SERVER;
+    return thread->fsync_idx;
 }
 
 static unsigned int thread_map_access( struct object *obj, unsigned int access )
@@ -692,6 +728,7 @@ static void thread_apc_destroy( struct object *obj )
             async_set_result( apc->owner, apc->call.async_io.status, 0 );
         release_object( apc->owner );
     }
+    reserve_obj_unbind( apc->reserve );
 }
 
 /* queue an async procedure call */
@@ -705,10 +742,12 @@ static struct thread_apc *create_apc( struct object *owner, const union apc_call
         else apc->call.type = APC_NONE;
         apc->caller      = NULL;
         apc->owner       = owner;
+        apc->reserve     = NULL;
         apc->executed    = 0;
         apc->result.type = APC_NONE;
         if (owner) grab_object( owner );
     }
+
     return apc;
 }
 
@@ -872,6 +911,8 @@ static void set_thread_info( struct thread *thread,
         thread->entry_point = req->entry_point;
     if (req->mask & SET_THREAD_INFO_DBG_HIDDEN)
         thread->dbg_hidden = 1;
+    if (req->mask & SET_THREAD_INFO_DISABLE_BOOST)
+        thread->disable_boost = req->disable_boost;
     if (req->mask & SET_THREAD_INFO_DESCRIPTION)
     {
         WCHAR *desc;
@@ -911,7 +952,8 @@ int suspend_thread( struct thread *thread )
     int old_count = thread->suspend;
     if (thread->suspend < MAXIMUM_SUSPEND_COUNT)
     {
-        if (!(thread->process->suspend + thread->suspend++)) stop_thread( thread );
+        if (!is_thread_suspended( thread )) stop_thread( thread );
+        thread->suspend++;
     }
     else set_error( STATUS_SUSPEND_COUNT_EXCEEDED );
     return old_count;
@@ -924,7 +966,7 @@ int resume_thread( struct thread *thread )
     if (thread->suspend > 0)
     {
         if (!(--thread->suspend)) resume_delayed_debug_events( thread );
-        if (!(thread->suspend + thread->process->suspend)) wake_thread( thread );
+        if (!is_thread_suspended( thread )) wake_thread( thread );
     }
     return old_count;
 }
@@ -1073,7 +1115,7 @@ static int check_wait( struct thread *thread )
         return STATUS_KERNEL_APC;
 
     /* Suspended threads may not acquire locks, but they can run system APCs */
-    if (thread->process->suspend + thread->suspend > 0) return -1;
+    if (is_thread_suspended( thread )) return -1;
 
     if (wait->select == SELECT_WAIT_ALL)
     {
@@ -1160,7 +1202,7 @@ int wake_thread_queue_entry( struct wait_queue_entry *entry )
     client_ptr_t cookie;
 
     if (thread->wait != wait) return 0;  /* not the current wait */
-    if (thread->process->suspend + thread->suspend > 0) return 0;  /* cannot acquire locks */
+    if (is_thread_suspended( thread )) return 0;  /* cannot acquire locks */
 
     assert( wait->select != SELECT_WAIT_ALL );
 
@@ -1183,7 +1225,7 @@ static void thread_timeout( void *ptr )
 
     wait->user = NULL;
     if (thread->wait != wait) return; /* not the top-level wait, ignore it */
-    if (thread->suspend + thread->process->suspend > 0) return;  /* suspended, ignore it */
+    if (is_thread_suspended( thread )) return;  /* suspended, ignore it */
 
     if (debug_level) fprintf( stderr, "%04x: *wakeup* signaled=TIMEOUT\n", thread->id );
     end_wait( thread, STATUS_TIMEOUT );
@@ -1294,6 +1336,12 @@ void wake_up( struct object *obj, int max )
     struct list *ptr;
     int ret;
 
+    if (do_fsync())
+        fsync_wake_up( obj );
+
+    if (do_esync())
+        esync_wake_up( obj );
+
     LIST_FOR_EACH( ptr, &obj->wait_queue )
     {
         struct wait_queue_entry *entry = LIST_ENTRY( ptr, struct wait_queue_entry, entry );
@@ -1321,8 +1369,7 @@ static inline struct list *get_apc_queue( struct thread *thread, enum apc_type t
 /* check if thread is currently waiting for a (system) apc */
 static inline int is_in_apc_wait( struct thread *thread )
 {
-    return (thread->process->suspend || thread->suspend ||
-            (thread->wait && (thread->wait->flags & SELECT_INTERRUPTIBLE)));
+    return (is_thread_suspended( thread ) || (thread->wait && (thread->wait->flags & SELECT_INTERRUPTIBLE)));
 }
 
 /* queue an existing APC to a given thread */
@@ -1381,8 +1428,11 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
     {
         wake_thread( thread );
 
-        if (apc->call.type == APC_USER && thread->inproc_alert_event)
-            set_event( thread->inproc_alert_event );
+        if (do_fsync() && queue == &thread->user_apc)
+            fsync_wake_futex( thread->fsync_apc_idx );
+
+        if (do_esync() && queue == &thread->user_apc)
+            esync_wake_fd( thread->esync_apc_fd );
     }
 
     return 1;
@@ -1415,8 +1465,6 @@ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_ty
         apc->executed = 1;
         wake_up( &apc->obj, 0 );
         release_object( apc );
-        if (list_empty( &thread->user_apc ) && thread->inproc_alert_event)
-            reset_event( thread->inproc_alert_event );
         return;
     }
 }
@@ -1431,10 +1479,14 @@ static struct thread_apc *thread_dequeue_apc( struct thread *thread, int system 
     {
         apc = LIST_ENTRY( ptr, struct thread_apc, entry );
         list_remove( ptr );
-
-        if (list_empty( &thread->user_apc ) && thread->inproc_alert_event)
-            reset_event( thread->inproc_alert_event );
     }
+
+    if (do_fsync() && list_empty( &thread->system_apc ) && list_empty( &thread->user_apc ))
+        fsync_clear_futex( thread->fsync_apc_idx );
+
+    if (do_esync() && list_empty( &thread->system_apc ) && list_empty( &thread->user_apc ))
+        esync_clear( thread->esync_apc_fd );
+
     return apc;
 }
 
@@ -1550,7 +1602,6 @@ void kill_thread( struct thread *thread, int violent_death )
     }
     kill_console_processes( thread, 0 );
     abandon_mutexes( thread );
-    set_inproc_event( thread->inproc_sync );
     if (violent_death)
     {
         send_thread_signal( thread, SIGQUIT );
@@ -1558,6 +1609,10 @@ void kill_thread( struct thread *thread, int violent_death )
     }
     else
         wake_up( &thread->obj, 0 );
+        if (do_fsync())
+            fsync_abandon_mutexes( thread );
+        if (do_esync())
+            esync_abandon_mutexes( thread );
     cleanup_thread( thread );
     remove_process_thread( thread->process, thread );
     release_object( thread );
@@ -1634,6 +1689,7 @@ DECL_HANDLER(new_thread)
         thread->system_regs = current->system_regs;
         if (req->flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) thread->suspend++;
         thread->dbg_hidden = !!(req->flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER);
+        thread->bypass_proc_suspend = !!(req->flags & THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE);
         reply->tid = get_thread_id( thread );
         if ((reply->handle = alloc_handle_no_access_check( current->process, thread,
                                                            req->access, objattr->attributes )))
@@ -1727,7 +1783,7 @@ DECL_HANDLER(init_thread)
     set_thread_base_priority( current, current->base_priority );
     set_thread_affinity( current, current->affinity );
 
-    reply->suspend = (current->suspend || current->process->suspend || current->context != NULL);
+    reply->suspend = (is_thread_suspended( current ) || current->context != NULL);
 }
 
 /* terminate a thread */
@@ -1785,6 +1841,8 @@ DECL_HANDLER(get_thread_info)
             reply->flags |= GET_THREAD_INFO_FLAG_TERMINATED;
         if (thread->process->running_threads == 1)
             reply->flags |= GET_THREAD_INFO_FLAG_LAST;
+        if (thread->disable_boost)
+            reply->flags |= GET_THREAD_INFO_FLAG_DISABLE_BOOST;
 
         if (thread->desc && get_reply_max_size())
         {
@@ -2004,7 +2062,20 @@ DECL_HANDLER(queue_apc)
     {
     case APC_NONE:
     case APC_USER:
+        if (req->reserve_handle &&
+            !(apc->reserve = reserve_obj_associate_apc( current->process, req->reserve_handle, &apc->obj )))
+        {
+            release_object( apc );
+            return;
+        }
         thread = get_thread_from_handle( req->handle, THREAD_SET_CONTEXT );
+        if (thread && call && call->user.flags & SERVER_USER_APC_SPECIAL && is_wow64_process( thread->process ))
+        {
+            release_object( apc );
+            release_object( thread );
+            set_error( STATUS_NOT_SUPPORTED );
+            return;
+        }
         break;
     case APC_VIRTUAL_ALLOC:
     case APC_VIRTUAL_ALLOC_EX:
@@ -2310,13 +2381,4 @@ DECL_HANDLER(get_next_thread)
     }
     set_error( STATUS_NO_MORE_ENTRIES );
     release_object( process );
-}
-
-DECL_HANDLER(get_inproc_alert_event)
-{
-    if (!current->inproc_alert_event)
-        current->inproc_alert_event = create_event( NULL, NULL, 0, 1, !list_empty( &current->user_apc ), NULL );
-
-    if (current->inproc_alert_event)
-        reply->handle = alloc_handle( current->process, current->inproc_alert_event, SYNCHRONIZE, 0 );
 }

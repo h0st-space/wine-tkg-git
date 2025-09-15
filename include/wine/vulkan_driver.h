@@ -21,6 +21,7 @@
 #define __WINE_VULKAN_DRIVER_H
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 #include <windef.h>
@@ -47,7 +48,7 @@ struct vulkan_client_object
 #include "wine/list.h"
 
 /* Wine internal vulkan driver version, needs to be bumped upon vulkan_funcs changes. */
-#define WINE_VULKAN_DRIVER_VERSION 36
+#define WINE_VULKAN_DRIVER_VERSION 40
 
 struct vulkan_object
 {
@@ -93,6 +94,7 @@ struct vulkan_physical_device
     VULKAN_OBJECT_HEADER( VkPhysicalDevice, physical_device );
     struct vulkan_instance *instance;
     uint32_t api_version;
+    bool has_swapchain_maintenance1;
 };
 
 static inline struct vulkan_physical_device *vulkan_physical_device_from_handle( VkPhysicalDevice handle )
@@ -215,7 +217,7 @@ struct client_surface;
 struct vulkan_driver_funcs
 {
     VkResult (*p_vulkan_surface_create)(HWND, const struct vulkan_instance *, VkSurfaceKHR *, struct client_surface **);
-    VkBool32 (*p_vkGetPhysicalDeviceWin32PresentationSupportKHR)(VkPhysicalDevice, uint32_t);
+    VkBool32 (*p_get_physical_device_presentation_support)(struct vulkan_physical_device *, uint32_t);
     const char *(*p_get_host_surface_extension)(void);
 };
 

@@ -1494,7 +1494,7 @@ static const IWMReaderTimecodeVtbl timecode_vtbl =
     timecode_GetTimecodeRangeBounds,
 };
 
-static void destroy_stream(struct wm_reader *reader)
+static void free_stream_buffers(struct wm_reader *reader)
 {
     unsigned int i;
 
@@ -1673,6 +1673,9 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
 }
 
     ReleaseSemaphore(reader->read_sem, 1, NULL);
+
+    free_stream_buffers(reader);
+
     wg_parser_disconnect(reader->wg_parser);
 
     EnterCriticalSection(&reader->shutdown_cs);
@@ -1684,7 +1687,6 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     reader->read_thread = NULL;
     reader->read_sem = NULL;
 
-    destroy_stream(reader);
     wg_parser_destroy(reader->wg_parser);
     reader->wg_parser = 0;
 
@@ -1751,7 +1753,7 @@ out_destroy_parser:
         CloseHandle(reader->read_sem);
         reader->read_sem = NULL;
     }
-    destroy_stream(reader);
+    free_stream_buffers(reader);
     wg_parser_destroy(reader->wg_parser);
     reader->wg_parser = 0;
 
@@ -2032,6 +2034,9 @@ static HRESULT WINAPI reader_Close(IWMSyncReader2 *iface)
     }
 
     ReleaseSemaphore(reader->read_sem, 1, NULL);
+
+    free_stream_buffers(reader);
+
     wg_parser_disconnect(reader->wg_parser);
 
     EnterCriticalSection(&reader->shutdown_cs);
@@ -2043,7 +2048,6 @@ static HRESULT WINAPI reader_Close(IWMSyncReader2 *iface)
     reader->read_thread = NULL;
     reader->read_sem = NULL;
 
-    destroy_stream(reader);
     wg_parser_destroy(reader->wg_parser);
     reader->wg_parser = 0;
 

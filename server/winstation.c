@@ -76,6 +76,8 @@ static const struct object_ops winstation_ops =
     no_add_queue,                 /* add_queue */
     NULL,                         /* remove_queue */
     NULL,                         /* signaled */
+    NULL,                         /* get_esync_fd */
+    NULL,                         /* get_fsync_idx */
     NULL,                         /* satisfied */
     no_signal,                    /* signal */
     no_get_fd,                    /* get_fd */
@@ -88,7 +90,6 @@ static const struct object_ops winstation_ops =
     default_unlink_name,          /* unlink_name */
     no_open_file,                 /* open_file */
     no_kernel_obj_list,           /* get_kernel_obj_list */
-    no_get_inproc_sync,           /* get_inproc_sync */
     winstation_close_handle,      /* close_handle */
     winstation_destroy            /* destroy */
 };
@@ -117,6 +118,8 @@ static const struct object_ops desktop_ops =
     no_add_queue,                 /* add_queue */
     NULL,                         /* remove_queue */
     NULL,                         /* signaled */
+    NULL,                         /* get_esync_fd */
+    NULL,                         /* get_fsync_idx */
     NULL,                         /* satisfied */
     no_signal,                    /* signal */
     no_get_fd,                    /* get_fd */
@@ -129,7 +132,6 @@ static const struct object_ops desktop_ops =
     default_unlink_name,          /* unlink_name */
     no_open_file,                 /* open_file */
     no_kernel_obj_list,           /* get_kernel_obj_list */
-    no_get_inproc_sync,           /* get_inproc_sync */
     desktop_close_handle,         /* close_handle */
     desktop_destroy               /* destroy */
 };
@@ -325,6 +327,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned 
                 shared->cursor.clip.right = 0;
                 shared->cursor.clip.bottom = 0;
                 memset( (void *)shared->keystate, 0, sizeof(shared->keystate) );
+                shared->keystate_serial = 1;
                 shared->monitor_serial = winstation->monitor_serial;
             }
             SHARED_WRITE_END;

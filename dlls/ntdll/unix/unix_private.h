@@ -105,6 +105,8 @@ struct ntdll_thread_data
     SYSTEM_SERVICE_TABLE     *syscall_table; /* 214/0370 syscall table */
     struct syscall_frame     *syscall_frame; /* 218/0378 current syscall frame */
     int                       syscall_trace; /* 21c/0380 syscall trace flag */
+    int                       esync_apc_fd;  /* fd to wait on for user APCs */
+    int                      *fsync_apc_futex;
     int                       request_fd;    /* fd for sending server requests */
     int                       reply_fd;      /* fd for receiving server replies */
     int                       wait_fd[2];    /* fd for sleeping server requests */
@@ -115,7 +117,6 @@ struct ntdll_thread_data
     PRTL_THREAD_START_ROUTINE start;         /* thread entry point */
     void                     *param;         /* thread entry point parameter */
     void                     *jmp_buf;       /* setjmp buffer for exception handling */
-    int                       linux_alert_obj; /* fd for the linux in-process alert event */
 };
 
 C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
@@ -202,9 +203,9 @@ extern HANDLE keyed_event;
 extern timeout_t server_start_time;
 extern sigset_t server_block_set;
 extern struct _KUSER_SHARED_DATA *user_shared_data;
-#ifdef __i386__
-extern struct ldt_copy __wine_ldt_copy;
-#endif
+
+extern BOOL ac_odyssey;
+extern BOOL fsync_simulate_sched_quantum;
 
 extern void init_environment(void);
 extern void init_startup_info(void);
@@ -223,8 +224,6 @@ extern NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module );
 extern ULONG_PTR redirect_arm64ec_rva( void *module, ULONG_PTR rva, const IMAGE_ARM64EC_METADATA *metadata );
 extern void start_server( BOOL debug );
 
-extern pthread_mutex_t fd_cache_mutex;
-
 extern unsigned int server_call_unlocked( void *req_ptr );
 extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
 extern void server_leave_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset );
@@ -232,13 +231,11 @@ extern unsigned int server_select( const union select_op *select_op, data_size_t
                                    timeout_t abs_timeout, struct context_data *context, struct user_apc *user_apc );
 extern unsigned int server_wait( const union select_op *select_op, data_size_t size, UINT flags,
                                  const LARGE_INTEGER *timeout );
-extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout );
 extern unsigned int server_queue_process_apc( HANDLE process, const union apc_call *call,
                                               union apc_result *result );
 extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
                                int *needs_close, enum server_fd_type *type, unsigned int *options );
 extern void wine_server_send_fd( int fd );
-extern int wine_server_receive_fd( obj_handle_t *handle );
 extern void process_exit_wrapper( int status ) DECLSPEC_NORETURN;
 extern size_t server_init_process(void);
 extern void server_init_process_done(void);
@@ -394,17 +391,14 @@ extern NTSTATUS wow64_wine_spawnvp( void *args );
 
 extern void dbg_init(void);
 
-extern void close_inproc_sync_obj( HANDLE handle );
-
-extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
-                                          PNTAPCFUNC func, NTSTATUS status );
+extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
+                                          ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status );
 extern NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context );
 extern void call_raise_user_exception_dispatcher(void);
 
 #define IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE 0x0010 /* Wine extension */
 
 #define TICKSPERSEC 10000000
-#define NSECPERSEC 1000000000
 #define SECS_1601_TO_1970  ((369 * 365 + 89) * (ULONGLONG)86400)
 
 static inline ULONGLONG ticks_from_time_t( time_t time )
@@ -476,7 +470,7 @@ static inline struct async_data server_async( HANDLE handle, struct async_fileio
 
 static inline NTSTATUS wait_async( HANDLE handle, BOOL alertable )
 {
-    return server_wait_for_object( handle, alertable, NULL );
+    return NtWaitForSingleObject( handle, alertable, NULL );
 }
 
 static inline BOOL in_wow64_call(void)
@@ -598,6 +592,93 @@ static inline NTSTATUS map_section( HANDLE mapping, void **ptr, SIZE_T *size, UL
     return NtMapViewOfSection( mapping, NtCurrentProcess(), ptr, user_space_wow_limit,
                                0, NULL, size, ViewShare, 0, protect );
 }
+
+/* LDT definitions */
+
+#if defined(__i386__) || defined(__x86_64__)
+
+#define LDT_SIZE 8192
+
+#define LDT_FLAGS_DATA      0x13  /* Data segment */
+#define LDT_FLAGS_CODE      0x1b  /* Code segment */
+#define LDT_FLAGS_32BIT     0x40  /* Segment is 32-bit (code or stack) */
+#define LDT_FLAGS_ALLOCATED 0x80  /* Segment is allocated */
+
+struct ldt_copy
+{
+    unsigned int  base[LDT_SIZE];
+    unsigned int  limit[LDT_SIZE];
+    unsigned char flags[LDT_SIZE];
+};
+extern struct ldt_copy __wine_ldt_copy;
+
+static const LDT_ENTRY null_entry;
+
+static inline unsigned int ldt_get_base( LDT_ENTRY ent )
+{
+    return (ent.BaseLow |
+            (unsigned int)ent.HighWord.Bits.BaseMid << 16 |
+            (unsigned int)ent.HighWord.Bits.BaseHi << 24);
+}
+
+static inline unsigned int ldt_get_limit( LDT_ENTRY ent )
+{
+    unsigned int limit = ent.LimitLow | (ent.HighWord.Bits.LimitHi << 16);
+    if (ent.HighWord.Bits.Granularity) limit = (limit << 12) | 0xfff;
+    return limit;
+}
+
+static inline LDT_ENTRY ldt_make_entry( unsigned int base, unsigned int limit, unsigned char flags )
+{
+    LDT_ENTRY entry;
+
+    entry.BaseLow                   = (WORD)base;
+    entry.HighWord.Bits.BaseMid     = (BYTE)(base >> 16);
+    entry.HighWord.Bits.BaseHi      = (BYTE)(base >> 24);
+    if ((entry.HighWord.Bits.Granularity = (limit >= 0x100000))) limit >>= 12;
+    entry.LimitLow                  = (WORD)limit;
+    entry.HighWord.Bits.LimitHi     = limit >> 16;
+    entry.HighWord.Bits.Dpl         = 3;
+    entry.HighWord.Bits.Pres        = 1;
+    entry.HighWord.Bits.Type        = flags;
+    entry.HighWord.Bits.Sys         = 0;
+    entry.HighWord.Bits.Reserved_0  = 0;
+    entry.HighWord.Bits.Default_Big = (flags & LDT_FLAGS_32BIT) != 0;
+    return entry;
+}
+
+static inline void update_ldt_copy( WORD sel, LDT_ENTRY entry )
+{
+    unsigned int index = sel >> 3;
+
+    __wine_ldt_copy.base[index]  = ldt_get_base( entry );
+    __wine_ldt_copy.limit[index] = ldt_get_limit( entry );
+    __wine_ldt_copy.flags[index] = (entry.HighWord.Bits.Type |
+                                    (entry.HighWord.Bits.Default_Big ? LDT_FLAGS_32BIT : 0) |
+                                    LDT_FLAGS_ALLOCATED);
+}
+
+static inline LDT_ENTRY ldt_make_cs32_entry(void)
+{
+    return ldt_make_entry( 0, ~0u, LDT_FLAGS_CODE | LDT_FLAGS_32BIT );
+}
+
+static inline LDT_ENTRY ldt_make_ds32_entry(void)
+{
+    return ldt_make_entry( 0, ~0u, LDT_FLAGS_DATA | LDT_FLAGS_32BIT );
+}
+
+static inline LDT_ENTRY ldt_make_fs32_entry( void *teb )
+{
+    return ldt_make_entry( PtrToUlong(teb), page_size - 1, LDT_FLAGS_DATA | LDT_FLAGS_32BIT );
+}
+
+static inline int is_gdt_sel( WORD sel )
+{
+    return !(sel & 4);
+}
+
+#endif  /* defined(__i386__) || defined(__x86_64__) */
 
 BOOL WINAPI __wine_needs_override_large_address_aware(void);
 

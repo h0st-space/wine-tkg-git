@@ -30,11 +30,9 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
 #include <sys/types.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
 #ifdef HAVE_SYS_SYSCALL_H
 #include <sys/syscall.h>
@@ -50,7 +48,6 @@
 #endif
 #include <string.h>
 #include <stdarg.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -59,9 +56,6 @@
 #endif
 #ifdef HAVE_KQUEUE
 # include <sys/event.h>
-#endif
-#ifdef HAVE_LINUX_NTSYNC_H
-# include <linux/ntsync.h>
 #endif
 
 #include "ntstatus.h"
@@ -72,6 +66,8 @@
 #include "wine/server.h"
 #include "wine/debug.h"
 #include "unix_private.h"
+#include "esync.h"
+#include "fsync.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(sync);
 
@@ -80,10 +76,8 @@ HANDLE keyed_event = 0;
 static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
 {
     if (!timeout) return "(infinite)";
-    return wine_dbg_sprintf( "%lld.%07ld", (long long)(timeout->QuadPart / TICKSPERSEC),
-                             (long)(timeout->QuadPart % TICKSPERSEC) );
+    return wine_dbgstr_longlong( timeout->QuadPart );
 }
-
 
 /* return a monotonic time counter, in Win32 ticks */
 static inline ULONGLONG monotonic_counter(void)
@@ -309,896 +303,6 @@ static unsigned int validate_open_object_attributes( const OBJECT_ATTRIBUTES *at
 }
 
 
-#ifdef NTSYNC_IOC_EVENT_READ
-
-static int get_linux_sync_device(void)
-{
-    static LONG device = -2;
-
-    if (device == -2)
-    {
-        obj_handle_t handle;
-        sigset_t sigset;
-        NTSTATUS ret;
-        int fd = -1;
-
-        /* We need to use fd_cache_mutex here to protect against races with
-         * other threads trying to receive fds for the fd cache,
-         * and we need to use an uninterrupted section to prevent reentrancy. */
-        server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
-
-        if (device == -2)
-        {
-            SERVER_START_REQ( get_linux_sync_device )
-            {
-                if (!(ret = wine_server_call( req )))
-                {
-                    fd = wine_server_receive_fd( &handle );
-                    assert( !handle );
-                }
-            }
-            SERVER_END_REQ;
-
-            device = fd;
-        }
-
-        server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
-    }
-    return device;
-}
-
-/* It's possible for synchronization primitives to remain alive even after being
- * closed, because a thread is still waiting on them. It's rare in practice, and
- * documented as being undefined behaviour by Microsoft, but it works, and some
- * applications rely on it. This means we need to refcount handles, and defer
- * deleting them on the server side until the refcount reaches zero. We do this
- * by having each client process hold a handle to the in-process synchronization
- * object, as well as a private refcount. When the client refcount reaches zero,
- * it closes the handle; when all handles are closed, the server deletes the
- * in-process synchronization object.
- *
- * We also need this for signal-and-wait. The signal and wait operations aren't
- * atomic, but we can't perform the signal and then return STATUS_INVALID_HANDLE
- * for the wait—we need to either do both operations or neither. That means we
- * need to grab references to both objects, and prevent them from being
- * destroyed before we're done with them.
- *
- * We want lookup of objects from the cache to be very fast; ideally, it should
- * be lock-free. We achieve this by using atomic modifications to "refcount",
- * and guaranteeing that all other fields are valid and correct *as long as*
- * refcount is nonzero, and we store the entire structure in memory which will
- * never be freed.
- *
- * This means that acquiring the object can't use a simple atomic increment; it
- * has to use a compare-and-swap loop to ensure that it doesn't try to increment
- * an object with a zero refcount. That's still leagues better than a real lock,
- * though, and release can be a single atomic decrement.
- *
- * It also means that threads modifying the cache need to take a lock, to
- * prevent other threads from writing to it concurrently.
- *
- * It's possible for an object currently in use (by a waiter) to be closed and
- * the same handle immediately reallocated to a different object. This should be
- * a very rare situation, and in that case we simply don't cache the handle.
- */
-struct inproc_sync_cache_entry
-{
-    LONG refcount;
-    int fd;
-    unsigned int access;
-    unsigned short type; /* enum inproc_sync_type, stored as short to save space */
-    unsigned short closed;
-};
-
-
-static void release_inproc_sync_obj( struct inproc_sync_cache_entry *cache )
-{
-    /* save the fd now; as soon as the refcount hits 0 we cannot
-     * access the cache anymore */
-    int fd = cache->fd;
-    LONG refcount = InterlockedDecrement( &cache->refcount );
-
-    assert( refcount >= 0 );
-
-    if (!refcount)
-        close( fd );
-}
-
-
-#define INPROC_SYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct inproc_sync_cache_entry))
-#define INPROC_SYNC_CACHE_ENTRIES     128
-
-static struct inproc_sync_cache_entry *inproc_sync_cache[INPROC_SYNC_CACHE_ENTRIES];
-static struct inproc_sync_cache_entry inproc_sync_cache_initial_block[INPROC_SYNC_CACHE_BLOCK_SIZE];
-
-static inline unsigned int inproc_sync_handle_to_index( HANDLE handle, unsigned int *entry )
-{
-    unsigned int idx = (wine_server_obj_handle(handle) >> 2) - 1;
-    *entry = idx / INPROC_SYNC_CACHE_BLOCK_SIZE;
-    return idx % INPROC_SYNC_CACHE_BLOCK_SIZE;
-}
-
-
-static struct inproc_sync_cache_entry *cache_inproc_sync_obj( HANDLE handle, obj_handle_t inproc_sync, int fd,
-                                                              enum inproc_sync_type type, unsigned int access )
-{
-    unsigned int entry, idx = inproc_sync_handle_to_index( handle, &entry );
-    struct inproc_sync_cache_entry *cache;
-    int refcount;
-
-    /* don't cache pseudo-handles; waiting on them is pointless anyway */
-    if ((ULONG)(ULONG_PTR)handle > 0xfffffffa)
-        return FALSE;
-
-    if (entry >= INPROC_SYNC_CACHE_ENTRIES)
-    {
-        FIXME( "too many allocated handles, not caching %p\n", handle );
-        return NULL;
-    }
-
-    if (!inproc_sync_cache[entry])  /* do we need to allocate a new block of entries? */
-    {
-        if (!entry) inproc_sync_cache[0] = inproc_sync_cache_initial_block;
-        else
-        {
-            static const size_t size = INPROC_SYNC_CACHE_BLOCK_SIZE * sizeof(struct inproc_sync_cache_entry);
-            void *ptr = anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
-            if (ptr == MAP_FAILED) return NULL;
-            if (InterlockedCompareExchangePointer( (void **)&inproc_sync_cache[entry], ptr, NULL ))
-                munmap( ptr, size ); /* someone beat us to it */
-        }
-    }
-
-    cache = &inproc_sync_cache[entry][idx];
-
-    if (InterlockedCompareExchange( &cache->refcount, 0, 0 ))
-    {
-        /* The handle is currently being used for another object (i.e. it was
-         * closed and then reused, but some thread is waiting on the old handle
-         * or otherwise simultaneously using the old object). We can't cache
-         * this object until the old one is completely destroyed. */
-        return NULL;
-    }
-
-    cache->fd = fd;
-    cache->type = type;
-    cache->access = access;
-    cache->closed = FALSE;
-    /* Make sure we set the other members before the refcount; this store needs
-     * release semantics [paired with the load in get_cached_inproc_sync_obj()].
-     * Set the refcount to 2 (one for the handle, one for the caller). */
-    refcount = InterlockedExchange( &cache->refcount, 2 );
-    assert( !refcount );
-
-    return cache;
-}
-
-
-/* returns the previous value */
-static inline LONG interlocked_inc_if_nonzero( LONG *dest )
-{
-    LONG val, tmp;
-    for (val = *dest;; val = tmp)
-    {
-        if (!val || (tmp = InterlockedCompareExchange( dest, val + 1, val )) == val)
-            break;
-    }
-    return val;
-}
-
-
-static struct inproc_sync_cache_entry *get_cached_inproc_sync_obj( HANDLE handle )
-{
-    unsigned int entry, idx = inproc_sync_handle_to_index( handle, &entry );
-    struct inproc_sync_cache_entry *cache;
-
-    if (entry >= INPROC_SYNC_CACHE_ENTRIES || !inproc_sync_cache[entry])
-        return NULL;
-
-    cache = &inproc_sync_cache[entry][idx];
-
-    /* this load needs acquire semantics [paired with the store in
-     * cache_inproc_sync_obj()] */
-    if (!interlocked_inc_if_nonzero( &cache->refcount ))
-        return NULL;
-
-    if (cache->closed)
-    {
-        /* The object is still being used, but "handle" has been closed. The
-         * handle value might have been reused for another object in the
-         * meantime, in which case we have to report that valid object, so
-         * force the caller to check the server. */
-        release_inproc_sync_obj( cache );
-        return NULL;
-    }
-
-    return cache;
-}
-
-
-static BOOL inproc_sync_types_match( enum inproc_sync_type a, enum inproc_sync_type b )
-{
-    if (a == b) return TRUE;
-    if (a == INPROC_SYNC_AUTO_EVENT && b == INPROC_SYNC_MANUAL_EVENT) return TRUE;
-    if (b == INPROC_SYNC_AUTO_EVENT && a == INPROC_SYNC_MANUAL_EVENT) return TRUE;
-    return FALSE;
-}
-
-
-/* returns a pointer to a cache entry; if the object could not be cached,
- * returns "stack_cache" instead, which should be allocated on stack */
-static NTSTATUS get_inproc_sync_obj( HANDLE handle, enum inproc_sync_type desired_type,
-                                     ACCESS_MASK desired_access,
-                                     struct inproc_sync_cache_entry *stack_cache,
-                                     struct inproc_sync_cache_entry **ret_cache )
-{
-    struct inproc_sync_cache_entry *cache;
-    obj_handle_t inproc_sync_handle;
-    enum inproc_sync_type type;
-    unsigned int access;
-    sigset_t sigset;
-    NTSTATUS ret;
-    int fd;
-
-    /* We don't need the device right now, but if we can't access it, that
-     * means ntsync isn't available. Fail fast in that case. */
-    if (get_linux_sync_device() < 0)
-        return STATUS_NOT_IMPLEMENTED;
-
-    /* try to find it in the cache already */
-    if ((cache = get_cached_inproc_sync_obj( handle )))
-    {
-        *ret_cache = cache;
-        return STATUS_SUCCESS;
-    }
-
-    /* We need to use fd_cache_mutex here to protect against races with
-     * other threads trying to receive fds for the fd cache,
-     * and we need to use an uninterrupted section to prevent reentrancy.
-     * We also need fd_cache_mutex to protect against the same race with
-     * NtClose, that is, to prevent the object from being cached again between
-     * close_inproc_sync_obj() and close_handle. */
-    server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
-
-    if ((cache = get_cached_inproc_sync_obj( handle )))
-    {
-        server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
-        *ret_cache = cache;
-        return STATUS_SUCCESS;
-    }
-
-    /* try to retrieve it from the server */
-    SERVER_START_REQ( get_linux_sync_obj )
-    {
-        req->handle = wine_server_obj_handle( handle );
-        if (!(ret = wine_server_call( req )))
-        {
-            obj_handle_t fd_handle;
-            fd = wine_server_receive_fd( &fd_handle );
-            assert( wine_server_ptr_handle(fd_handle) == handle );
-            access = reply->access;
-            type = reply->type;
-        }
-    }
-    SERVER_END_REQ;
-
-    if (ret)
-    {
-        server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
-        return ret;
-    }
-
-    cache = cache_inproc_sync_obj( handle, inproc_sync_handle, fd, type, access );
-
-    server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
-
-    if (!cache)
-    {
-        cache = stack_cache;
-        cache->fd = fd;
-        cache->type = type;
-        cache->access = access;
-        cache->closed = FALSE;
-        cache->refcount = 1;
-    }
-
-    *ret_cache = cache;
-
-    if (desired_type && !inproc_sync_types_match( cache->type, desired_type ))
-    {
-        release_inproc_sync_obj( cache );
-        return STATUS_OBJECT_TYPE_MISMATCH;
-    }
-
-    if ((cache->access & desired_access) != desired_access)
-    {
-        release_inproc_sync_obj( cache );
-        return STATUS_ACCESS_DENIED;
-    }
-
-    return STATUS_SUCCESS;
-}
-
-
-/* caller must hold fd_cache_mutex */
-void close_inproc_sync_obj( HANDLE handle )
-{
-    struct inproc_sync_cache_entry *cache = get_cached_inproc_sync_obj( handle );
-
-    if (cache)
-    {
-        cache->closed = TRUE;
-        /* once for the reference we just grabbed, and once for the handle */
-        release_inproc_sync_obj( cache );
-        release_inproc_sync_obj( cache );
-    }
-}
-
-
-static NTSTATUS linux_release_semaphore_obj( int obj, ULONG count, ULONG *prev_count )
-{
-    NTSTATUS ret;
-
-    ret = ioctl( obj, NTSYNC_IOC_SEM_RELEASE, &count );
-    if (ret < 0)
-    {
-        if (errno == EOVERFLOW)
-            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
-        else
-            return errno_to_status( errno );
-    }
-    if (prev_count) *prev_count = count;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_release_semaphore( HANDLE handle, ULONG count, ULONG *prev_count )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_SEMAPHORE,
-                                    SEMAPHORE_MODIFY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_release_semaphore_obj( cache->fd, count, prev_count );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_query_semaphore_obj( int obj, SEMAPHORE_BASIC_INFORMATION *info )
-{
-    struct ntsync_sem_args args = {0};
-    NTSTATUS ret;
-
-    ret = ioctl( obj, NTSYNC_IOC_SEM_READ, &args );
-    if (ret < 0)
-        return errno_to_status( errno );
-    info->CurrentCount = args.count;
-    info->MaximumCount = args.max;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_query_semaphore( HANDLE handle, SEMAPHORE_BASIC_INFORMATION *info )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_SEMAPHORE,
-                                    SEMAPHORE_QUERY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_query_semaphore_obj( cache->fd, info );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_set_event_obj( int obj, LONG *prev_state )
-{
-    NTSTATUS ret;
-    __u32 prev;
-
-    ret = ioctl( obj, NTSYNC_IOC_EVENT_SET, &prev );
-    if (ret < 0)
-        return errno_to_status( errno );
-    if (prev_state) *prev_state = prev;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_set_event( HANDLE handle, LONG *prev_state )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_AUTO_EVENT,
-                                    EVENT_MODIFY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_set_event_obj( cache->fd, prev_state );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_reset_event_obj( int obj, LONG *prev_state )
-{
-    NTSTATUS ret;
-    __u32 prev;
-
-    ret = ioctl( obj, NTSYNC_IOC_EVENT_RESET, &prev );
-    if (ret < 0)
-        return errno_to_status( errno );
-    if (prev_state) *prev_state = prev;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_reset_event( HANDLE handle, LONG *prev_state )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_AUTO_EVENT,
-                                    EVENT_MODIFY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_reset_event_obj( cache->fd, prev_state );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_pulse_event_obj( int obj, LONG *prev_state )
-{
-    NTSTATUS ret;
-    __u32 prev;
-
-    ret = ioctl( obj, NTSYNC_IOC_EVENT_PULSE, &prev );
-    if (ret < 0)
-        return errno_to_status( errno );
-    if (prev_state) *prev_state = prev;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_pulse_event( HANDLE handle, LONG *prev_state )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_AUTO_EVENT,
-                                    EVENT_MODIFY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_pulse_event_obj( cache->fd, prev_state );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_query_event_obj( int obj, enum inproc_sync_type type, EVENT_BASIC_INFORMATION *info )
-{
-    struct ntsync_event_args args = {0};
-    NTSTATUS ret;
-
-    ret = ioctl( obj, NTSYNC_IOC_EVENT_READ, &args );
-    if (ret < 0)
-        return errno_to_status( errno );
-    info->EventType = (type == INPROC_SYNC_AUTO_EVENT) ? SynchronizationEvent : NotificationEvent;
-    info->EventState = args.signaled;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_query_event( HANDLE handle, EVENT_BASIC_INFORMATION *info )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_AUTO_EVENT,
-                                    EVENT_QUERY_STATE, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_query_event_obj( cache->fd, cache->type, info );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_release_mutex_obj( int obj, LONG *prev_count )
-{
-    struct ntsync_mutex_args args = {0};
-    NTSTATUS ret;
-
-    args.owner = GetCurrentThreadId();
-    ret = ioctl( obj, NTSYNC_IOC_MUTEX_UNLOCK, &args );
-
-    if (ret < 0)
-    {
-        if (errno == EOVERFLOW)
-            return STATUS_MUTANT_LIMIT_EXCEEDED;
-        else if (errno == EPERM)
-            return STATUS_MUTANT_NOT_OWNED;
-        else
-            return errno_to_status( errno );
-    }
-    if (prev_count) *prev_count = 1 - args.count;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_release_mutex( HANDLE handle, LONG *prev_count )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_MUTEX, 0, &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_release_mutex_obj( cache->fd, prev_count );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-
-static NTSTATUS linux_query_mutex_obj( int obj, MUTANT_BASIC_INFORMATION *info )
-{
-    struct ntsync_mutex_args args = {0};
-    NTSTATUS ret;
-
-    ret = ioctl( obj, NTSYNC_IOC_MUTEX_READ, &args );
-
-    if (ret < 0)
-    {
-        if (errno == EOWNERDEAD)
-        {
-            info->AbandonedState = TRUE;
-            info->OwnedByCaller = FALSE;
-            info->CurrentCount = 1;
-            return STATUS_SUCCESS;
-        }
-        else
-            return errno_to_status( errno );
-    }
-    info->AbandonedState = FALSE;
-    info->OwnedByCaller = (args.owner == GetCurrentThreadId());
-    info->CurrentCount = 1 - args.count;
-    return STATUS_SUCCESS;
-}
-
-
-static NTSTATUS inproc_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *info )
-{
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    NTSTATUS ret;
-
-    if ((ret = get_inproc_sync_obj( handle, INPROC_SYNC_MUTEX, MUTANT_QUERY_STATE,
-                                    &stack_cache, &cache )))
-        return ret;
-
-    ret = linux_query_mutex_obj( cache->fd, info );
-
-    release_inproc_sync_obj( cache );
-    return ret;
-}
-
-static void select_queue(void)
-{
-    SERVER_START_REQ( select_inproc_queue )
-    {
-        wine_server_call( req );
-    }
-    SERVER_END_REQ;
-}
-
-static void unselect_queue( BOOL signaled )
-{
-    SERVER_START_REQ( unselect_inproc_queue )
-    {
-        req->signaled = signaled;
-        wine_server_call( req );
-    }
-    SERVER_END_REQ;
-}
-
-static int get_inproc_alert_obj(void)
-{
-    struct ntdll_thread_data *data = ntdll_get_thread_data();
-    struct inproc_sync_cache_entry stack_cache, *cache;
-    HANDLE alert_handle;
-    unsigned int ret;
-
-    if (data->linux_alert_obj == -1)
-    {
-        SERVER_START_REQ( get_inproc_alert_event )
-        {
-            if ((ret = wine_server_call( req )))
-                ERR( "failed to get inproc alert event, status %#x\n", ret );
-            alert_handle = wine_server_ptr_handle( reply->handle );
-        }
-        SERVER_END_REQ;
-
-        if ((ret = get_inproc_sync_obj( alert_handle, 0, SYNCHRONIZE, &stack_cache, &cache )))
-            ERR( "failed to get inproc alert obj, status %#x\n", ret );
-        data->linux_alert_obj = cache->fd;
-        /* Set the fd to -1 so release_inproc_sync_obj() won't close it.
-         * Manhandling the cache entry here is fine since we're the only thread
-         * that can access our own alert event. */
-        cache->fd = -1;
-        release_inproc_sync_obj( cache );
-        NtClose( alert_handle );
-    }
-
-    return data->linux_alert_obj;
-}
-
-static NTSTATUS linux_wait_objs( int device, const DWORD count, const int *objs,
-                                 BOOLEAN wait_any, BOOLEAN alertable, const LARGE_INTEGER *timeout )
-{
-    struct ntsync_wait_args args = {0};
-    unsigned long request;
-    struct timespec now;
-    int ret;
-
-    if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE)
-    {
-        args.timeout = ~(__u64)0;
-    }
-    else if (timeout->QuadPart <= 0)
-    {
-        clock_gettime( CLOCK_MONOTONIC, &now );
-        args.timeout = (now.tv_sec * NSECPERSEC) + now.tv_nsec + (-timeout->QuadPart * 100);
-    }
-    else
-    {
-        args.timeout = (timeout->QuadPart * 100) - (SECS_1601_TO_1970 * NSECPERSEC);
-        args.flags |= NTSYNC_WAIT_REALTIME;
-    }
-
-    args.objs = (uintptr_t)objs;
-    args.count = count;
-    args.owner = GetCurrentThreadId();
-    args.index = ~0u;
-
-    if (alertable)
-        args.alert = get_inproc_alert_obj();
-
-    if (wait_any || count == 1)
-        request = NTSYNC_IOC_WAIT_ANY;
-    else
-        request = NTSYNC_IOC_WAIT_ALL;
-
-    do
-    {
-        ret = ioctl( device, request, &args );
-    } while (ret < 0 && errno == EINTR);
-
-    if (!ret)
-    {
-        if (args.index == count)
-        {
-            static const LARGE_INTEGER timeout;
-
-            ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
-            assert( ret == STATUS_USER_APC );
-            return ret;
-        }
-
-        return wait_any ? args.index : 0;
-    }
-    else if (errno == EOWNERDEAD)
-        return STATUS_ABANDONED + (wait_any ? args.index : 0);
-    else if (errno == ETIMEDOUT)
-        return STATUS_TIMEOUT;
-    else
-        return errno_to_status( errno );
-}
-
-static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
-                             BOOLEAN alertable, const LARGE_INTEGER *timeout )
-{
-    struct inproc_sync_cache_entry stack_cache[64], *cache[64];
-    int device, objs[64];
-    HANDLE queue = NULL;
-    NTSTATUS ret;
-    DWORD i, j;
-
-    if ((device = get_linux_sync_device()) < 0)
-        return STATUS_NOT_IMPLEMENTED;
-
-    for (i = 0; i < count; ++i)
-    {
-        if ((ret = get_inproc_sync_obj( handles[i], 0, SYNCHRONIZE, &stack_cache[i], &cache[i] )))
-        {
-            for (j = 0; j < i; ++j)
-                release_inproc_sync_obj( cache[j] );
-            return ret;
-        }
-        if (cache[i]->type == INPROC_SYNC_QUEUE)
-            queue = handles[i];
-
-        objs[i] = cache[i]->fd;
-    }
-
-    /* It's common to wait on the message queue alone. Some applications wait
-     * on it in fast paths, with a zero timeout. Since we take two server calls
-     * instead of one when going through inproc_wait(), and since we only need
-     * to go through that path if we're waiting on other objects, just delegate
-     * to the server if we're only waiting on the message queue. */
-    if (count == 1 && queue)
-    {
-        release_inproc_sync_obj( cache[0] );
-        return server_wait_for_object( handles[0], alertable, timeout );
-    }
-
-    if (queue) select_queue();
-
-    ret = linux_wait_objs( device, count, objs, wait_any, alertable, timeout );
-
-    if (queue) unselect_queue( handles[ret] == queue );
-
-    for (i = 0; i < count; ++i)
-        release_inproc_sync_obj( cache[i] );
-
-    return ret;
-}
-
-static NTSTATUS inproc_signal_and_wait( HANDLE signal, HANDLE wait,
-                                        BOOLEAN alertable, const LARGE_INTEGER *timeout )
-{
-    struct inproc_sync_cache_entry signal_stack_cache, *signal_cache;
-    struct inproc_sync_cache_entry wait_stack_cache, *wait_cache;
-    HANDLE queue = NULL;
-    NTSTATUS ret;
-    int device;
-
-    if ((device = get_linux_sync_device()) < 0)
-        return STATUS_NOT_IMPLEMENTED;
-
-    if ((ret = get_inproc_sync_obj( signal, 0, 0, &signal_stack_cache, &signal_cache )))
-        return ret;
-
-    switch (signal_cache->type)
-    {
-        case INPROC_SYNC_SEMAPHORE:
-            if (!(signal_cache->access & SEMAPHORE_MODIFY_STATE))
-            {
-                release_inproc_sync_obj( signal_cache );
-                return STATUS_ACCESS_DENIED;
-            }
-            break;
-
-        case INPROC_SYNC_AUTO_EVENT:
-        case INPROC_SYNC_MANUAL_EVENT:
-            if (!(signal_cache->access & EVENT_MODIFY_STATE))
-            {
-                release_inproc_sync_obj( signal_cache );
-                return STATUS_ACCESS_DENIED;
-            }
-            break;
-
-        case INPROC_SYNC_MUTEX:
-            break;
-
-        default:
-            /* can't be signaled */
-            release_inproc_sync_obj( signal_cache );
-            return STATUS_OBJECT_TYPE_MISMATCH;
-    }
-
-    if ((ret = get_inproc_sync_obj( wait, 0, SYNCHRONIZE, &wait_stack_cache, &wait_cache )))
-    {
-        release_inproc_sync_obj( signal_cache );
-        return ret;
-    }
-
-    if (wait_cache->type == INPROC_SYNC_QUEUE)
-        queue = wait;
-
-    switch (signal_cache->type)
-    {
-        case INPROC_SYNC_SEMAPHORE:
-            ret = linux_release_semaphore_obj( signal_cache->fd, 1, NULL );
-            break;
-
-        case INPROC_SYNC_AUTO_EVENT:
-        case INPROC_SYNC_MANUAL_EVENT:
-            ret = linux_set_event_obj( signal_cache->fd, NULL );
-            break;
-
-        case INPROC_SYNC_MUTEX:
-            ret = linux_release_mutex_obj( signal_cache->fd, NULL );
-            break;
-
-        default:
-            assert( 0 );
-            break;
-    }
-
-    if (!ret)
-    {
-        if (queue) select_queue();
-        ret = linux_wait_objs( device, 1, &wait_cache->fd, TRUE, alertable, timeout );
-        if (queue) unselect_queue( !ret );
-    }
-
-    release_inproc_sync_obj( signal_cache );
-    release_inproc_sync_obj( wait_cache );
-    return ret;
-}
-
-#else
-
-void close_inproc_sync_obj( HANDLE handle )
-{
-}
-
-static NTSTATUS inproc_release_semaphore( HANDLE handle, ULONG count, ULONG *prev_count )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_query_semaphore( HANDLE handle, SEMAPHORE_BASIC_INFORMATION *info )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_set_event( HANDLE handle, LONG *prev_state )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_reset_event( HANDLE handle, LONG *prev_state )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_pulse_event( HANDLE handle, LONG *prev_state )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_query_event( HANDLE handle, EVENT_BASIC_INFORMATION *info )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_release_mutex( HANDLE handle, LONG *prev_count )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *info )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
-                             BOOLEAN alertable, const LARGE_INTEGER *timeout )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS inproc_signal_and_wait( HANDLE signal, HANDLE wait,
-                                        BOOLEAN alertable, const LARGE_INTEGER *timeout )
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-#endif
-
-
 /******************************************************************************
  *              NtCreateSemaphore (NTDLL.@)
  */
@@ -1209,12 +313,15 @@ NTSTATUS WINAPI NtCreateSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJ
     data_size_t len;
     struct object_attributes *objattr;
 
-    TRACE( "access %#x, name %s, initial %d, max %d\n", (int)access,
-           attr ? debugstr_us(attr->ObjectName) : "(null)", (int)initial, (int)max );
-
     *handle = 0;
     if (max <= 0 || initial < 0 || initial > max) return STATUS_INVALID_PARAMETER;
     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+
+    if (do_fsync())
+        return fsync_create_semaphore( handle, access, attr, initial, max );
+
+    if (do_esync())
+        return esync_create_semaphore( handle, access, attr, initial, max );
 
     SERVER_START_REQ( create_semaphore )
     {
@@ -1239,9 +346,14 @@ NTSTATUS WINAPI NtOpenSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJEC
 {
     unsigned int ret;
 
-    TRACE( "access %#x, name %s\n", (int)access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
-
     *handle = 0;
+
+    if (do_fsync())
+        return fsync_open_semaphore( handle, access, attr );
+
+    if (do_esync())
+        return esync_open_semaphore( handle, access, attr );
+
     if ((ret = validate_open_object_attributes( attr ))) return ret;
 
     SERVER_START_REQ( open_semaphore )
@@ -1278,11 +390,11 @@ NTSTATUS WINAPI NtQuerySemaphore( HANDLE handle, SEMAPHORE_INFORMATION_CLASS cla
 
     if (len != sizeof(SEMAPHORE_BASIC_INFORMATION)) return STATUS_INFO_LENGTH_MISMATCH;
 
-    if ((ret = inproc_query_semaphore( handle, out )) != STATUS_NOT_IMPLEMENTED)
-    {
-        if (!ret && ret_len) *ret_len = sizeof(SEMAPHORE_BASIC_INFORMATION);
-        return ret;
-    }
+    if (do_fsync())
+        return fsync_query_semaphore( handle, info, ret_len );
+
+    if (do_esync())
+        return esync_query_semaphore( handle, info, ret_len );
 
     SERVER_START_REQ( query_semaphore )
     {
@@ -1306,10 +418,11 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous 
 {
     unsigned int ret;
 
-    TRACE( "handle %p, count %u, prev_count %p\n", handle, (int)count, previous );
+    if (do_fsync())
+        return fsync_release_semaphore( handle, count, previous );
 
-    if ((ret = inproc_release_semaphore( handle, count, previous )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
+    if (do_esync())
+        return esync_release_semaphore( handle, count, previous );
 
     SERVER_START_REQ( release_semaphore )
     {
@@ -1335,11 +448,15 @@ NTSTATUS WINAPI NtCreateEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_
     data_size_t len;
     struct object_attributes *objattr;
 
-    TRACE( "access %#x, name %s, type %u, state %u\n", (int)access,
-           attr ? debugstr_us(attr->ObjectName) : "(null)", type, state );
-
     *handle = 0;
     if (type != NotificationEvent && type != SynchronizationEvent) return STATUS_INVALID_PARAMETER;
+
+    if (do_fsync())
+        return fsync_create_event( handle, access, attr, type, state );
+
+    if (do_esync())
+        return esync_create_event( handle, access, attr, type, state );
+
     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
 
     SERVER_START_REQ( create_event )
@@ -1365,10 +482,14 @@ NTSTATUS WINAPI NtOpenEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
 {
     unsigned int ret;
 
-    TRACE( "access %#x, name %s\n", (int)access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
-
     *handle = 0;
     if ((ret = validate_open_object_attributes( attr ))) return ret;
+
+    if (do_fsync())
+        return fsync_open_event( handle, access, attr );
+
+    if (do_esync())
+        return esync_open_event( handle, access, attr );
 
     SERVER_START_REQ( open_event )
     {
@@ -1390,12 +511,14 @@ NTSTATUS WINAPI NtOpenEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
  */
 NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
 {
+    /* This comment is a dummy to make sure this patch applies in the right place. */
     unsigned int ret;
 
-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    if (do_fsync())
+        return fsync_set_event( handle, prev_state );
 
-    if ((ret = inproc_set_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
+    if (do_esync())
+        return esync_set_event( handle );
 
     SERVER_START_REQ( event_op )
     {
@@ -1414,12 +537,15 @@ NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
  */
 NTSTATUS WINAPI NtResetEvent( HANDLE handle, LONG *prev_state )
 {
+    /* This comment is a dummy to make sure this patch applies in the right place. */
     unsigned int ret;
 
-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    if (do_fsync())
+        return fsync_reset_event( handle, prev_state );
 
-    if ((ret = inproc_reset_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
+    if (do_esync())
+        return esync_reset_event( handle );
+
 
     SERVER_START_REQ( event_op )
     {
@@ -1450,10 +576,11 @@ NTSTATUS WINAPI NtPulseEvent( HANDLE handle, LONG *prev_state )
 {
     unsigned int ret;
 
-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    if (do_fsync())
+        return fsync_pulse_event( handle, prev_state );
 
-    if ((ret = inproc_pulse_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
+    if (do_esync())
+        return esync_pulse_event( handle );
 
     SERVER_START_REQ( event_op )
     {
@@ -1486,11 +613,11 @@ NTSTATUS WINAPI NtQueryEvent( HANDLE handle, EVENT_INFORMATION_CLASS class,
 
     if (len != sizeof(EVENT_BASIC_INFORMATION)) return STATUS_INFO_LENGTH_MISMATCH;
 
-    if ((ret = inproc_query_event( handle, out )) != STATUS_NOT_IMPLEMENTED)
-    {
-        if (!ret && ret_len) *ret_len = sizeof(EVENT_BASIC_INFORMATION);
-        return ret;
-    }
+    if (do_fsync())
+        return fsync_query_event( handle, info, ret_len );
+
+    if (do_esync())
+        return esync_query_event( handle, info, ret_len );
 
     SERVER_START_REQ( query_event )
     {
@@ -1517,10 +644,14 @@ NTSTATUS WINAPI NtCreateMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT
     data_size_t len;
     struct object_attributes *objattr;
 
-    TRACE( "access %#x, name %s, owned %u\n", (int)access,
-           attr ? debugstr_us(attr->ObjectName) : "(null)", owned );
-
     *handle = 0;
+
+    if (do_fsync())
+        return fsync_create_mutex( handle, access, attr, owned );
+
+    if (do_esync())
+        return esync_create_mutex( handle, access, attr, owned );
+
     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
 
     SERVER_START_REQ( create_mutex )
@@ -1545,10 +676,14 @@ NTSTATUS WINAPI NtOpenMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT_A
 {
     unsigned int ret;
 
-    TRACE( "access %#x, name %s\n", (int)access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
-
     *handle = 0;
     if ((ret = validate_open_object_attributes( attr ))) return ret;
+
+    if (do_fsync())
+        return fsync_open_mutex( handle, access, attr );
+
+    if (do_esync())
+        return esync_open_mutex( handle, access, attr );
 
     SERVER_START_REQ( open_mutex )
     {
@@ -1572,10 +707,11 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
 {
     unsigned int ret;
 
-    TRACE( "handle %p, prev_count %p\n", handle, prev_count );
+    if (do_fsync())
+        return fsync_release_mutex( handle, prev_count );
 
-    if ((ret = inproc_release_mutex( handle, prev_count )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
+    if (do_esync())
+        return esync_release_mutex( handle, prev_count );
 
     SERVER_START_REQ( release_mutex )
     {
@@ -1607,11 +743,11 @@ NTSTATUS WINAPI NtQueryMutant( HANDLE handle, MUTANT_INFORMATION_CLASS class,
 
     if (len != sizeof(MUTANT_BASIC_INFORMATION)) return STATUS_INFO_LENGTH_MISMATCH;
 
-    if ((ret = inproc_query_mutex( handle, out )) != STATUS_NOT_IMPLEMENTED)
-    {
-        if (!ret && ret_len) *ret_len = sizeof(MUTANT_BASIC_INFORMATION);
-        return ret;
-    }
+    if (do_fsync())
+        return fsync_query_mutex( handle, info, ret_len );
+
+    if (do_esync())
+        return esync_query_mutex( handle, info, ret_len );
 
     SERVER_START_REQ( query_mutex )
     {
@@ -2382,9 +1518,6 @@ NTSTATUS WINAPI NtCreateTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_
     data_size_t len;
     struct object_attributes *objattr;
 
-    TRACE( "access %#x, name %s, type %u\n", (int)access,
-           attr ? debugstr_us(attr->ObjectName) : "(null)", type );
-
     *handle = 0;
     if (type != NotificationTimer && type != SynchronizationTimer) return STATUS_INVALID_PARAMETER;
     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
@@ -2411,8 +1544,6 @@ NTSTATUS WINAPI NtCreateTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_
 NTSTATUS WINAPI NtOpenTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )
 {
     unsigned int ret;
-
-    TRACE( "access %#x, name %s\n", (int)access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
 
     *handle = 0;
     if ((ret = validate_open_object_attributes( attr ))) return ret;
@@ -2466,8 +1597,6 @@ NTSTATUS WINAPI NtSetTimer( HANDLE handle, const LARGE_INTEGER *when, PTIMER_APC
 NTSTATUS WINAPI NtCancelTimer( HANDLE handle, BOOLEAN *state )
 {
     unsigned int ret;
-
-    TRACE( "handle %p, state %p\n", handle, state );
 
     SERVER_START_REQ( cancel_timer )
     {
@@ -2537,29 +1666,27 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, BO
 {
     union select_op select_op;
     UINT i, flags = SELECT_INTERRUPTIBLE;
-    unsigned int ret;
 
     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
 
-    if (TRACE_ON(sync))
+    if (do_fsync())
     {
-        TRACE( "wait_any %u, alertable %u, handles {%p", wait_any, alertable, handles[0] );
-        for (i = 1; i < count; i++) TRACE( ", %p", handles[i] );
-        TRACE( "}, timeout %s\n", debugstr_timeout(timeout) );
+        NTSTATUS ret = fsync_wait_objects( count, handles, wait_any, alertable, timeout );
+        if (ret != STATUS_NOT_IMPLEMENTED)
+            return ret;
     }
 
-    if ((ret = inproc_wait( count, handles, wait_any, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
+    if (do_esync())
     {
-        TRACE( "-> %#x\n", ret );
-        return ret;
+        NTSTATUS ret = esync_wait_objects( count, handles, wait_any, alertable, timeout );
+        if (ret != STATUS_NOT_IMPLEMENTED)
+            return ret;
     }
 
     if (alertable) flags |= SELECT_ALERTABLE;
     select_op.wait.op = wait_any ? SELECT_WAIT : SELECT_WAIT_ALL;
     for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
-    ret = server_wait( &select_op, offsetof( union select_op, wait.handles[count] ), flags, timeout );
-    TRACE( "-> %#x\n", ret );
-    return ret;
+    return server_wait( &select_op, offsetof( union select_op, wait.handles[count] ), flags, timeout );
 }
 
 
@@ -2580,14 +1707,14 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
-    NTSTATUS ret;
 
-    TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
+    if (do_fsync())
+        return fsync_signal_and_wait( signal, wait, alertable, timeout );
+
+    if (do_esync())
+        return esync_signal_and_wait( signal, wait, alertable, timeout );
 
     if (!signal) return STATUS_INVALID_HANDLE;
-
-    if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
-        return ret;
 
     if (alertable) flags |= SELECT_ALERTABLE;
     select_op.signal_and_wait.op = SELECT_SIGNAL_AND_WAIT;
@@ -2631,9 +1758,26 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
     /* if alertable, we need to query the server */
     if (alertable)
     {
+        if (do_fsync())
+        {
+            status = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+            if (status != STATUS_NOT_IMPLEMENTED)
+                goto alert_waited;
+        }
+
+        if (do_esync())
+        {
+            status = esync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+            if (status != STATUS_NOT_IMPLEMENTED)
+                goto alert_waited;
+        }
+
         /* Since server_wait will result in an unconditional implicit yield,
            we never return STATUS_NO_YIELD_PERFORMED */
-        if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
+        status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout );
+
+alert_waited:
+        if (status == STATUS_TIMEOUT)
             status = STATUS_SUCCESS;
         return status;
     }
@@ -2831,9 +1975,6 @@ NTSTATUS WINAPI NtCreateKeyedEvent( HANDLE *handle, ACCESS_MASK access,
     data_size_t len;
     struct object_attributes *objattr;
 
-    TRACE( "access %#x, name %s, flags %#x\n", (int)access,
-           attr ? debugstr_us(attr->ObjectName) : "(null)", (int)flags );
-
     *handle = 0;
     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
 
@@ -2857,8 +1998,6 @@ NTSTATUS WINAPI NtCreateKeyedEvent( HANDLE *handle, ACCESS_MASK access,
 NTSTATUS WINAPI NtOpenKeyedEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )
 {
     unsigned int ret;
-
-    TRACE( "access %#x, name %s\n", (int)access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
 
     *handle = 0;
     if ((ret = validate_open_object_attributes( attr ))) return ret;
@@ -2886,8 +2025,6 @@ NTSTATUS WINAPI NtWaitForKeyedEvent( HANDLE handle, const void *key,
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
 
-    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
-
     if (!handle) handle = keyed_event;
     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
     if (alertable) flags |= SELECT_ALERTABLE;
@@ -2906,8 +2043,6 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
 {
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
-
-    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
 
     if (!handle) handle = keyed_event;
     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
@@ -3053,7 +2188,7 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
     }
     SERVER_END_REQ;
     if (status != STATUS_PENDING) return status;
-    if (!timeout || timeout->QuadPart) status = server_wait_for_object( wait_handle, FALSE, timeout );
+    if (!timeout || timeout->QuadPart) status = NtWaitForSingleObject( wait_handle, FALSE, timeout );
     else                               status = STATUS_TIMEOUT;
     if (status != WAIT_OBJECT_0) return status;
 
@@ -3117,7 +2252,7 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
         assert( status == STATUS_USER_APC );
         goto done;
     }
-    if (!timeout || timeout->QuadPart) status = server_wait_for_object( wait_handle, alertable, timeout );
+    if (!timeout || timeout->QuadPart) status = NtWaitForSingleObject( wait_handle, alertable, timeout );
     else                               status = STATUS_TIMEOUT;
     if (status != WAIT_OBJECT_0) goto done;
 
@@ -3339,6 +2474,27 @@ NTSTATUS WINAPI NtCompleteConnectPort( HANDLE handle )
 
 
 /***********************************************************************
+ *             NtImpersonateClientOfPort (NTDLL.@)
+ */
+NTSTATUS WINAPI NtImpersonateClientOfPort( HANDLE handle, LPC_MESSAGE *request )
+{
+    FIXME( "(%p,%p),stub!\n", handle, request );
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ *             NtReadRequestData (NTDLL.@)
+ */
+NTSTATUS WINAPI NtReadRequestData( HANDLE handle, LPC_MESSAGE *request, ULONG id,
+                                   void *buffer, ULONG len, ULONG *retlen )
+{
+    FIXME( "(%p,%p,%u,%p,%u,%p),stub!\n", handle, request, id, buffer, len, retlen );
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
  *             NtRegisterThreadTerminatePort (NTDLL.@)
  */
 NTSTATUS WINAPI NtRegisterThreadTerminatePort( HANDLE handle )
@@ -3364,6 +2520,16 @@ NTSTATUS WINAPI NtRequestWaitReplyPort( HANDLE handle, LPC_MESSAGE *msg_in, LPC_
 
 
 /***********************************************************************
+ *             NtReplyPort (NTDLL.@)
+ */
+NTSTATUS WINAPI NtReplyPort( HANDLE handle, LPC_MESSAGE *reply )
+{
+    FIXME("(%p,%p),stub!\n", handle, reply );
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
  *             NtReplyWaitReceivePort (NTDLL.@)
  */
 NTSTATUS WINAPI NtReplyWaitReceivePort( HANDLE handle, ULONG *id, LPC_MESSAGE *reply, LPC_MESSAGE *msg )
@@ -3372,6 +2538,27 @@ NTSTATUS WINAPI NtReplyWaitReceivePort( HANDLE handle, ULONG *id, LPC_MESSAGE *r
     return STATUS_NOT_IMPLEMENTED;
 }
 
+
+/***********************************************************************
+ *             NtReplyWaitReceivePortEx (NTDLL.@)
+ */
+NTSTATUS WINAPI NtReplyWaitReceivePortEx( HANDLE handle, ULONG *id, LPC_MESSAGE *reply, LPC_MESSAGE *msg,
+                                          LARGE_INTEGER *timeout )
+{
+    FIXME("(%p,%p,%p,%p,%p),stub!\n", handle, id, reply, msg, timeout );
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+
+/***********************************************************************
+ *             NtWriteRequestData (NTDLL.@)
+ */
+NTSTATUS WINAPI NtWriteRequestData( HANDLE handle, LPC_MESSAGE *request, ULONG id,
+                                    void *buffer, ULONG len, ULONG *retlen )
+{
+    FIXME( "(%p,%p,%u,%p,%u,%p),stub!\n", handle, request, id, buffer, len, retlen );
+    return STATUS_NOT_IMPLEMENTED;
+}
 
 #define MAX_ATOM_LEN  255
 #define IS_INTATOM(x) (((ULONG_PTR)(x) >> 16) == 0)

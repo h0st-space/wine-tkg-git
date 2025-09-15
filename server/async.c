@@ -78,6 +78,8 @@ static const struct object_ops async_ops =
     add_queue,                 /* add_queue */
     remove_queue,              /* remove_queue */
     async_signaled,            /* signaled */
+    NULL,                      /* get_esync_fd */
+    NULL,                      /* get_fsync_idx */
     async_satisfied,           /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -90,7 +92,6 @@ static const struct object_ops async_ops =
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
-    no_get_inproc_sync,        /* get_inproc_sync */
     no_close_handle,           /* close_handle */
     async_destroy              /* destroy */
 };
@@ -519,6 +520,7 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
                 union apc_call data;
                 memset( &data, 0, sizeof(data) );
                 data.type         = APC_USER;
+                data.user.flags   = 0;
                 data.user.func    = async->data.apc;
                 data.user.args[0] = async->data.apc_context;
                 data.user.args[1] = async->data.iosb;
@@ -699,6 +701,8 @@ static const struct object_ops iosb_ops =
     no_add_queue,             /* add_queue */
     NULL,                     /* remove_queue */
     NULL,                     /* signaled */
+    NULL,                     /* get_esync_fd */
+    NULL,                     /* get_fsync_idx */
     NULL,                     /* satisfied */
     no_signal,                /* signal */
     no_get_fd,                /* get_fd */
@@ -711,7 +715,6 @@ static const struct object_ops iosb_ops =
     NULL,                     /* unlink_name */
     no_open_file,             /* open_file */
     no_kernel_obj_list,       /* get_kernel_obj_list */
-    no_get_inproc_sync,       /* get_inproc_sync */
     no_close_handle,          /* close_handle */
     iosb_destroy              /* destroy */
 };

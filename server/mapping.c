@@ -67,6 +67,8 @@ static const struct object_ops ranges_ops =
     no_add_queue,              /* add_queue */
     NULL,                      /* remove_queue */
     NULL,                      /* signaled */
+    NULL,                      /* get_esync_fd */
+    NULL,                      /* get_fsync_idx */
     NULL,                      /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -79,7 +81,6 @@ static const struct object_ops ranges_ops =
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
-    no_get_inproc_sync,        /* get_inproc_sync */
     no_close_handle,           /* close_handle */
     ranges_destroy             /* destroy */
 };
@@ -104,6 +105,8 @@ static const struct object_ops shared_map_ops =
     no_add_queue,              /* add_queue */
     NULL,                      /* remove_queue */
     NULL,                      /* signaled */
+    NULL,                      /* get_esync_fd */
+    NULL,                      /* get_fsync_idx */
     NULL,                      /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
@@ -116,7 +119,6 @@ static const struct object_ops shared_map_ops =
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
-    no_get_inproc_sync,        /* get_inproc_sync */
     no_close_handle,           /* close_handle */
     shared_map_destroy         /* destroy */
 };
@@ -157,6 +159,7 @@ struct type_descr mapping_type =
 struct mapping
 {
     struct object   obj;             /* object header */
+    struct list     kernel_object;   /* list of kernel object pointers */
     mem_size_t      size;            /* mapping size */
     unsigned int    flags;           /* SEC_* flags */
     struct fd      *fd;              /* fd for mapped file */
@@ -167,6 +170,7 @@ struct mapping
 
 static void mapping_dump( struct object *obj, int verbose );
 static struct fd *mapping_get_fd( struct object *obj );
+static struct list *mapping_get_kernel_obj_list( struct object *obj );
 static void mapping_destroy( struct object *obj );
 static enum server_fd_type mapping_get_fd_type( struct fd *fd );
 
@@ -178,6 +182,8 @@ static const struct object_ops mapping_ops =
     no_add_queue,                /* add_queue */
     NULL,                        /* remove_queue */
     NULL,                        /* signaled */
+    NULL,                        /* get_esync_fd */
+    NULL,                        /* get_fsync_idx */
     NULL,                        /* satisfied */
     no_signal,                   /* signal */
     mapping_get_fd,              /* get_fd */
@@ -189,8 +195,7 @@ static const struct object_ops mapping_ops =
     directory_link_name,         /* link_name */
     default_unlink_name,         /* unlink_name */
     no_open_file,                /* open_file */
-    no_kernel_obj_list,          /* get_kernel_obj_list */
-    no_get_inproc_sync,          /* get_inproc_sync */
+    mapping_get_kernel_obj_list, /* get_kernel_obj_list */
     no_close_handle,             /* close_handle */
     mapping_destroy              /* destroy */
 };
@@ -1023,6 +1028,8 @@ static struct mapping *create_mapping( struct object *root, const struct unicode
     if (get_error() == STATUS_OBJECT_NAME_EXISTS)
         return mapping;  /* Nothing else to do */
 
+    list_init( &mapping->kernel_object );
+
     mapping->size        = size;
     mapping->fd          = NULL;
     mapping->shared      = NULL;
@@ -1113,6 +1120,8 @@ struct mapping *create_fd_mapping( struct object *root, const struct unicode_str
 
     if (!(mapping = create_named_object( root, &mapping_ops, name, attr, sd ))) return NULL;
     if (get_error() == STATUS_OBJECT_NAME_EXISTS) return mapping;  /* Nothing else to do */
+
+    list_init( &mapping->kernel_object );
 
     mapping->shared    = NULL;
     mapping->committed = NULL;
@@ -1218,6 +1227,12 @@ static struct fd *mapping_get_fd( struct object *obj )
 {
     struct mapping *mapping = (struct mapping *)obj;
     return (struct fd *)grab_object( mapping->fd );
+}
+
+static struct list *mapping_get_kernel_obj_list( struct object *obj )
+{
+    struct mapping *mapping = (struct mapping *)obj;
+    return &mapping->kernel_object;
 }
 
 static void mapping_destroy( struct object *obj )
