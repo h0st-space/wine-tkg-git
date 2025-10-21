@@ -145,11 +145,6 @@ static void shader_dump_global_flags(struct vkd3d_d3d_asm_compiler *compiler, en
 
 static void shader_dump_atomic_op_flags(struct vkd3d_d3d_asm_compiler *compiler, uint32_t atomic_flags)
 {
-    if (atomic_flags & VKD3DARF_SEQ_CST)
-    {
-        vkd3d_string_buffer_printf(&compiler->buffer, "_seqCst");
-        atomic_flags &= ~VKD3DARF_SEQ_CST;
-    }
     if (atomic_flags & VKD3DARF_VOLATILE)
     {
         vkd3d_string_buffer_printf(&compiler->buffer, "_volatile");
@@ -593,6 +588,18 @@ static void shader_print_uint_literal(struct vkd3d_d3d_asm_compiler *compiler,
             prefix, compiler->colours.literal, i, compiler->colours.reset, suffix);
 }
 
+static void shader_print_int64_literal(struct vkd3d_d3d_asm_compiler *compiler,
+        const char *prefix, int64_t i, const char *suffix)
+{
+    /* Note that we need to handle INT64_MIN here as well. */
+    if (i < 0)
+        vkd3d_string_buffer_printf(&compiler->buffer, "%s-%s%"PRIu64"%s%s",
+                prefix, compiler->colours.literal, -(uint64_t)i, compiler->colours.reset, suffix);
+    else
+        vkd3d_string_buffer_printf(&compiler->buffer, "%s%s%"PRId64"%s%s",
+                prefix, compiler->colours.literal, i, compiler->colours.reset, suffix);
+}
+
 static void shader_print_uint64_literal(struct vkd3d_d3d_asm_compiler *compiler,
         const char *prefix, uint64_t i, const char *suffix)
 {
@@ -792,6 +799,12 @@ static void shader_print_register(struct vkd3d_d3d_asm_compiler *compiler, const
                 shader_print_double_literal(compiler, "", reg->u.immconst_f64[0], "");
                 if (reg->dimension == VSIR_DIMENSION_VEC4)
                     shader_print_double_literal(compiler, ", ", reg->u.immconst_f64[1], "");
+            }
+            else if (reg->data_type == VSIR_DATA_I64)
+            {
+                shader_print_int64_literal(compiler, "", reg->u.immconst_u64[0], "");
+                if (reg->dimension == VSIR_DIMENSION_VEC4)
+                    shader_print_int64_literal(compiler, "", reg->u.immconst_u64[1], "");
             }
             else if (reg->data_type == VSIR_DATA_U64)
             {

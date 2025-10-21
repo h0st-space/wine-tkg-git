@@ -31659,8 +31659,7 @@ static NTSTATUS wow64_gl_glGetError( void *args )
         GLenum ret;
     } *params = args;
     TEB *teb = get_teb64( params->teb );
-    const struct opengl_funcs *funcs = teb->glTable;
-    params->ret = funcs->p_glGetError();
+    params->ret = wow64_glGetError( teb );
     return STATUS_SUCCESS;
 }
 
@@ -97534,8 +97533,8 @@ struct opengl_funcs null_opengl_funcs =
     .p_wglSwapIntervalEXT = null_wglSwapIntervalEXT,
 };
 
-const int extension_registry_size = 2694;
-const struct registry_entry extension_registry[2694] =
+const int extension_registry_size = 2698;
+const struct registry_entry extension_registry[2698] =
 {
     { "glAccumxOES", "GL_OES_fixed_point", offsetof(struct opengl_funcs, p_glAccumxOES) },
     { "glAcquireKeyedMutexWin32EXT", "GL_EXT_win32_keyed_mutex", offsetof(struct opengl_funcs, p_glAcquireKeyedMutexWin32EXT) },

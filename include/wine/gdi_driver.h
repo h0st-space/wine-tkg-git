@@ -218,7 +218,7 @@ struct gdi_dc_funcs
 };
 
 /* increment this when you change the DC function table */
-#define WINE_GDI_DRIVER_VERSION 106
+#define WINE_GDI_DRIVER_VERSION 107
 
 #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
 #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
@@ -272,6 +272,7 @@ W32KAPI void *client_surface_create( UINT size, const struct client_surface_func
 W32KAPI void client_surface_add_ref( struct client_surface *surface );
 W32KAPI void client_surface_release( struct client_surface *surface );
 W32KAPI void client_surface_present( struct client_surface *surface );
+W32KAPI void detach_client_surfaces( HWND hwnd );
 
 static inline const char *debugstr_client_surface( struct client_surface *surface )
 {
@@ -411,7 +412,7 @@ struct user_driver_funcs
     void    (*pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
     void    (*pSetParent)(HWND,HWND,HWND);
     void    (*pSetWindowRgn)(HWND,HRGN,BOOL);
-    void    (*pSetWindowIcon)(HWND,UINT,HICON);
+    void    (*pSetWindowIcons)(HWND,HICON,const ICONINFO*,HICON,const ICONINFO*);
     void    (*pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
     void    (*pSetWindowText)(HWND,LPCWSTR);
     UINT    (*pShowWindow)(HWND,INT,RECT*,UINT);

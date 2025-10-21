@@ -1,7 +1,8 @@
 /*
- * futex-based synchronization objects
+ * Version file for Common Controls
  *
- * Copyright (C) 2018 Zebediah Figura
+ * Copyright 1999 Bertho Stultiens
+ * Copyright 1999 Eric Kohl
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -18,17 +19,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-extern int do_fsync(void);
-extern void fsync_init(void);
-extern unsigned int fsync_alloc_shm( int low, int high );
-extern void fsync_wake_futex( unsigned int shm_idx );
-extern void fsync_clear_futex( unsigned int shm_idx );
-extern void fsync_wake_up( struct object *obj );
-extern void fsync_clear( struct object *obj );
+#define WINE_FILEDESCRIPTION_STR "Wine Common Controls"
+#define WINE_FILENAME_STR "comctl32.dll"
+#define WINE_FILEVERSION 5,81,4704,1100
 
-struct fsync;
-
-extern const struct object_ops fsync_ops;
-extern void fsync_set_event( struct fsync *fsync );
-extern void fsync_reset_event( struct fsync *fsync );
-extern void fsync_abandon_mutexes( struct thread *thread );
+#include "wine/wine_common_ver.rc"

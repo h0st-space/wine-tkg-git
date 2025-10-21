@@ -638,6 +638,7 @@ enum wine_internal_message
     WM_WINE_IME_NOTIFY,
     WM_WINE_WINDOW_STATE_CHANGED,
     WM_WINE_UPDATEWINDOWSTATE,
+    WM_WINE_TRACKMOUSEEVENT,
     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
     WM_WINE_SETCURSOR,
@@ -783,7 +784,7 @@ W32KAPI HWND    WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *cla
                                              UNICODE_STRING *version, UNICODE_STRING *window_name,
                                              DWORD style, INT x, INT y, INT cx, INT cy,
                                              HWND parent, HMENU menu, HINSTANCE instance, void *params,
-                                             DWORD flags, HINSTANCE client_instance, DWORD unk, BOOL ansi );
+                                             DWORD flags, HINSTANCE client_instance, const WCHAR *class, BOOL ansi );
 W32KAPI HWINSTA WINAPI NtUserCreateWindowStation( OBJECT_ATTRIBUTES *attr, ACCESS_MASK mask, ULONG arg3,
                                                   ULONG arg4, ULONG arg5, ULONG arg6, ULONG arg7 );
 W32KAPI HDWP    WINAPI NtUserDeferWindowPosAndBand( HDWP hdwp, HWND hwnd, HWND after, INT x, INT y,

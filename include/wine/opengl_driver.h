@@ -64,7 +64,7 @@ struct wgl_pixel_format
 #include "wine/gdi_driver.h"
 
 /* Wine internal opengl driver version, needs to be bumped upon opengl_funcs changes. */
-#define WINE_OPENGL_DRIVER_VERSION 36
+#define WINE_OPENGL_DRIVER_VERSION 37
 
 struct opengl_drawable;
 struct wgl_context;
@@ -121,6 +121,7 @@ struct opengl_funcs
     BOOL       (*p_wglSwapIntervalEXT)( int interval );
 #define USE_GL_FUNC(x) PFN_##x p_##x;
     ALL_EGL_FUNCS
+    ALL_EGL_EXT_FUNCS
     ALL_GL_FUNCS
     ALL_GL_EXT_FUNCS
 #undef USE_GL_FUNC
@@ -135,11 +136,23 @@ struct egl_platform
     BOOL                 force_pbuffer_formats;
 
     /* filled by win32u after init_egl_platform */
-    EGLDisplay  display;
-    UINT        config_count;
-    EGLConfig  *configs;
-    BOOL        has_EGL_EXT_present_opaque;
-    BOOL        has_EGL_EXT_pixel_format_float;
+    EGLDeviceEXT         device;
+    EGLDisplay           display;
+    UINT                 config_count;
+    EGLConfig           *configs;
+    BOOL                 has_EGL_EXT_present_opaque;
+    BOOL                 has_EGL_EXT_pixel_format_float;
+
+    /* WGL_WINE_query_renderer info */
+    UINT                 device_id;
+    UINT                 vendor_id;
+    BOOL                 accelerated;
+    UINT                 version[3];
+    UINT                 core_version;
+    UINT                 compat_version;
+    UINT                 video_memory;
+    const char          *device_name;
+    const char          *vendor_name;
 };
 
 struct opengl_drawable_funcs
@@ -149,14 +162,14 @@ struct opengl_drawable_funcs
     void (*flush)( struct opengl_drawable *iface, UINT flags );
     /* swap and present the drawable buffers, called from render thread */
     BOOL (*swap)( struct opengl_drawable *iface );
+    /* drawable is being unset or made current, called from render thread */
+    void (*set_context)( struct opengl_drawable *iface, void *private );
 };
 
 /* flags for opengl_drawable flush */
 #define GL_FLUSH_FINISHED      0x01
 #define GL_FLUSH_INTERVAL      0x02
 #define GL_FLUSH_UPDATED       0x04
-#define GL_FLUSH_WAS_CURRENT   0x08
-#define GL_FLUSH_SET_CURRENT   0x10
 
 /* a driver opengl drawable, either a client surface of a pbuffer */
 struct opengl_drawable
@@ -182,8 +195,6 @@ static inline const char *debugstr_opengl_drawable( struct opengl_drawable *draw
 W32KAPI void *opengl_drawable_create( UINT size, const struct opengl_drawable_funcs *funcs, int format, struct client_surface *client );
 W32KAPI void opengl_drawable_add_ref( struct opengl_drawable *drawable );
 W32KAPI void opengl_drawable_release( struct opengl_drawable *drawable );
-
-W32KAPI void set_window_opengl_drawable( HWND hwnd, struct opengl_drawable *drawable, BOOL current );
 
 /* interface between win32u and the user drivers */
 struct opengl_driver_funcs
