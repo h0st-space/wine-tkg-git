@@ -9,9 +9,10 @@ AC_PREREQ(2.63b)
 AC_INIT([Wine],[WINE_VERSION],[wine-devel@winehq.org],[wine],[https://www.winehq.org])
 AC_CONFIG_SRCDIR(server/atom.c)
 AC_CONFIG_HEADERS(include/config.h)
-AC_CONFIG_AUX_DIR(tools)
 
-libwine_version="1.0"
+dnl Work around install-sh requirement in autoconf <= 2.69
+AC_PREREQ([2.69d],[AC_CONFIG_AUX_DIR(tools)],
+                  [AC_PROVIDE([AC_CONFIG_AUX_DIR_DEFAULT])ac_aux_dir="${srcdir}/tools"])
 
 dnl **** Command-line arguments ****
 
@@ -2091,13 +2092,7 @@ fi
 
 dnl **** Platform-specific checks ****
 
-case "$HOST_ARCH,$PE_ARCHS" in
-  x86_64,i386) wine_binary="wine" ;;
-  x86_64,*) wine_binary="wine64" ;;
-  *) wine_binary="wine" ;;
-esac
-test "$wine_binary" = wine || WINE_IGNORE_FILE(loader/wine)
-AC_SUBST(WINELOADER_PROGRAMS,"$wine_binary")
+AC_SUBST(WINELOADER_PROGRAMS,"wine")
 
 case $host_os in
   linux*)
@@ -2110,8 +2105,7 @@ esac
 
 if test "$wine_use_preloader" = "yes"
 then
-  test "$wine_binary" = wine || WINE_IGNORE_FILE(loader/wine-preloader)
-  WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS $wine_binary-preloader"
+  WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS wine-preloader"
   AC_DEFINE(HAVE_WINE_PRELOADER, 1, [Define to 1 if the Wine preloader is being used.])
 fi
 
@@ -2172,8 +2166,6 @@ fi
 
 dnl **** Check for types ****
 
-AC_CHECK_TYPES([request_sense],,,[#include <linux/cdrom.h>])
-
 AC_CACHE_CHECK([whether we can use re-entrant gethostbyname_r Linux style],
    	wine_cv_linux_gethostbyname_r_6,
 	AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <netdb.h>]],[[
@@ -2205,8 +2197,8 @@ AC_CHECK_MEMBERS([struct sockaddr_un.sun_len],,,
 # include <sys/un.h>
 #endif])
 
-dnl Check for scsireq_t and sg_io_hdr_t members
-AC_CHECK_MEMBERS([scsireq_t.cmd, sg_io_hdr_t.interface_id],,,
+dnl Check for sg_io_hdr_t members
+AC_CHECK_MEMBERS([sg_io_hdr_t.interface_id],,,
 [#include <sys/types.h>
 #ifdef HAVE_SCSI_SG_H
 #include <scsi/sg.h>
@@ -3217,6 +3209,7 @@ WINE_CONFIG_MAKEFILE(dlls/taskschd)
 WINE_CONFIG_MAKEFILE(dlls/taskschd/tests)
 WINE_CONFIG_MAKEFILE(dlls/tbs)
 WINE_CONFIG_MAKEFILE(dlls/tdh)
+WINE_CONFIG_MAKEFILE(dlls/tdh/tests)
 WINE_CONFIG_MAKEFILE(dlls/tdi.sys)
 WINE_CONFIG_MAKEFILE(dlls/threadpoolwinrt)
 WINE_CONFIG_MAKEFILE(dlls/threadpoolwinrt/tests)
@@ -3354,6 +3347,8 @@ WINE_CONFIG_MAKEFILE(dlls/windows.system.profile.systemid)
 WINE_CONFIG_MAKEFILE(dlls/windows.system.profile.systemid/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.system.profile.systemmanufacturers)
 WINE_CONFIG_MAKEFILE(dlls/windows.system.profile.systemmanufacturers/tests)
+WINE_CONFIG_MAKEFILE(dlls/windows.ui.core.textinput)
+WINE_CONFIG_MAKEFILE(dlls/windows.ui.core.textinput/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.ui.xaml)
 WINE_CONFIG_MAKEFILE(dlls/windows.ui.xaml/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.ui)
@@ -3541,7 +3536,6 @@ WINE_CONFIG_MAKEFILE(po)
 WINE_CONFIG_MAKEFILE(programs/arp)
 WINE_CONFIG_MAKEFILE(programs/aspnet_regiis)
 WINE_CONFIG_MAKEFILE(programs/attrib)
-WINE_CONFIG_MAKEFILE(programs/belauncher)
 WINE_CONFIG_MAKEFILE(programs/cabarc)
 WINE_CONFIG_MAKEFILE(programs/cacls)
 WINE_CONFIG_MAKEFILE(programs/certutil)
@@ -3775,7 +3769,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-10.17.r0.gf686957b\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-10.17.r8.g6e5b36c9\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg

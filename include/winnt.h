@@ -401,7 +401,9 @@ extern "C" {
 
 /* Compile time assertion */
 
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 202311L)
+#define C_ASSERT(e) static_assert(e, #e)
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 #define C_ASSERT(e) _Static_assert(e, #e)
 #else
 #define C_ASSERT(e) extern void __C_ASSERT__(int [(e)?1:-1])
@@ -6235,6 +6237,14 @@ NTSYSAPI DWORD WINAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE,PRTL_RUN_ONCE_INIT_FN,
 NTSYSAPI DWORD WINAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE, DWORD, PVOID*);
 NTSYSAPI DWORD WINAPI RtlRunOnceComplete(PRTL_RUN_ONCE, DWORD, PVOID);
 NTSYSAPI WORD WINAPI RtlCaptureStackBackTrace(DWORD,DWORD,void**,DWORD*);
+
+typedef struct _RTL_BARRIER {
+    DWORD Reserved1;
+    DWORD Reserved2;
+    ULONG_PTR Reserved3[2];
+    DWORD Reserved4;
+    DWORD Reserved5;
+} RTL_BARRIER, *PRTL_BARRIER;
 
 #pragma pack(push,8)
 typedef struct _IO_COUNTERS {

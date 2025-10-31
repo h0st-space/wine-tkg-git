@@ -953,6 +953,9 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateFileW( LPCWSTR filename, DWORD access, DWO
          */
         if (status == STATUS_OBJECT_NAME_COLLISION)
             SetLastError( ERROR_FILE_EXISTS );
+        else if (status == STATUS_FILE_IS_A_DIRECTORY &&
+                 nameW.Buffer[nameW.Length / sizeof(WCHAR) - 1] == '\\')
+            SetLastError( ERROR_PATH_NOT_FOUND );
         else
             SetLastError( RtlNtStatusToDosError(status) );
     }
@@ -2710,7 +2713,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH MoveFileWithProgressW( const WCHAR *source, const 
                                                      void *param, DWORD flag )
 {
     FILE_RENAME_INFORMATION *rename_info;
-    FILE_BASIC_INFORMATION info;
     UNICODE_STRING nt_name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK io;
@@ -2736,9 +2738,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH MoveFileWithProgressW( const WCHAR *source, const 
                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT );
     RtlFreeUnicodeString( &nt_name );
-    if (!set_ntstatus( status )) goto error;
-
-    status = NtQueryInformationFile( source_handle, &io, &info, sizeof(info), FileBasicInformation );
     if (!set_ntstatus( status )) goto error;
 
     if (!RtlDosPathNameToNtPathName_U( dest, &nt_name, NULL, NULL ))

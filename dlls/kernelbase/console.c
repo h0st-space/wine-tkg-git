@@ -420,7 +420,12 @@ static BOOL alloc_console( BOOL headless )
     memset( &console_si, 0, sizeof(console_si) );
     console_si.StartupInfo.cb = sizeof(console_si);
     InitializeProcThreadAttributeList( NULL, 1, 0, &size );
-    if (!(console_si.lpAttributeList = HeapAlloc( GetProcessHeap(), 0, size ))) return FALSE;
+    if (!(console_si.lpAttributeList = HeapAlloc( GetProcessHeap(), 0, size )))
+    {
+        RtlLeaveCriticalSection( &console_section );
+        SetLastError( ERROR_NOT_ENOUGH_MEMORY );
+        return FALSE;
+    }
     InitializeProcThreadAttributeList( console_si.lpAttributeList, 1, 0, &size );
 
     if (!(server = create_console_server()) || !(console = create_console_reference( server ))) goto error;
@@ -1063,14 +1068,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetConsoleScreenBufferInfoEx( HANDLE handle,
     info->wPopupAttributes      = condrv_info.popup_attr;
     info->bFullscreenSupported  = FALSE;
     memcpy( info->ColorTable, condrv_info.color_map, sizeof(info->ColorTable) );
-    return TRUE;
-}
-
-
-BOOL WINAPI DECLSPEC_HOTPATCH GetConsoleSelectionInfo(CONSOLE_SELECTION_INFO *info)
-{
-    FIXME("stub (%p)\n", info);
-    info->dwFlags = CONSOLE_NO_SELECTION;
     return TRUE;
 }
 
