@@ -1641,7 +1641,6 @@ enum server_fd_type
 {
     FD_TYPE_INVALID,  /* invalid file (no associated fd) */
     FD_TYPE_FILE,     /* regular file */
-    FD_TYPE_SYMLINK,  /* symbolic link */
     FD_TYPE_DIR,      /* directory */
     FD_TYPE_SOCKET,   /* socket */
     FD_TYPE_SERIAL,   /* serial port */
@@ -1853,6 +1852,7 @@ enum server_fd_type
     obj_handle_t mapping;       /* file mapping handle */
     client_ptr_t base;          /* view base address (page-aligned) */
     mem_size_t   size;          /* view size */
+    mem_size_t   offset;        /* offset into the image */
     unsigned int entry;         /* entry point in mapped view */
     unsigned short machine;     /* machine in the mapped view */
 @END
@@ -2031,6 +2031,8 @@ struct process_info
     obj_handle_t handle;       /* process handle */
     client_ptr_t addr;         /* addr to write to */
     VARARG(data,bytes);        /* data to write */
+@REPLY
+    data_size_t written;       /* number of bytes written */
 @END
 
 

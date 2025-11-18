@@ -1070,10 +1070,7 @@ static void test_CommandLine(void)
     SetLastError(0xdeadbeef);
     ret = CreateProcessA(buffer, NULL, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
     ok(!ret, "CreateProcessA unexpectedly succeeded\n");
-    ok(GetLastError() == ERROR_PATH_NOT_FOUND ||
-       broken(GetLastError() == ERROR_FILE_NOT_FOUND) /* Win9x/WinME */ ||
-       broken(GetLastError() == ERROR_ACCESS_DENIED) /* Win98 */,
-       "Expected ERROR_PATH_NOT_FOUND, got %ld\n", GetLastError());
+    ok(GetLastError() == ERROR_PATH_NOT_FOUND, "Expected ERROR_PATH_NOT_FOUND, got %ld\n", GetLastError());
 
     buffer2[0] = '\0';
 
@@ -1081,20 +1078,44 @@ static void test_CommandLine(void)
     SetLastError(0xdeadbeef);
     ret = CreateProcessA(buffer, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
     ok(!ret, "CreateProcessA unexpectedly succeeded\n");
-    ok(GetLastError() == ERROR_PATH_NOT_FOUND ||
-       broken(GetLastError() == ERROR_FILE_NOT_FOUND) /* Win9x/WinME */ ||
-       broken(GetLastError() == ERROR_ACCESS_DENIED) /* Win98 */,
-       "Expected ERROR_PATH_NOT_FOUND, got %ld\n", GetLastError());
+    ok(GetLastError() == ERROR_PATH_NOT_FOUND, "Expected ERROR_PATH_NOT_FOUND, got %ld\n", GetLastError());
 
     /* Test empty command line parameter. */
     SetLastError(0xdeadbeef);
     ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
     ok(!ret, "CreateProcessA unexpectedly succeeded\n");
-    ok(GetLastError() == ERROR_FILE_NOT_FOUND ||
-       GetLastError() == ERROR_PATH_NOT_FOUND /* NT4 */ ||
-       GetLastError() == ERROR_BAD_PATHNAME /* Win98 */ ||
-       GetLastError() == ERROR_INVALID_PARAMETER /* Win7 */,
-       "Expected ERROR_FILE_NOT_FOUND, got %ld\n", GetLastError());
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+
+    strcpy(buffer2, " " );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    strcpy(buffer2, " notepad.exe" );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    strcpy(buffer2, "\tnotepad.exe" );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    strcpy(buffer2, "\"\"" );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    strcpy(buffer2, "\" \"" );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    strcpy(buffer2, "\"\t\"" );
+    SetLastError(0xdeadbeef);
+    ret = CreateProcessA(NULL, buffer2, NULL, NULL, FALSE, 0L, NULL, NULL, &startup, &info);
+    ok(!ret, "CreateProcessA unexpectedly succeeded\n");
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND, "Expected ERROR_FILE_NOT_FOUND, got %ld\n", GetLastError());
 
     strcpy(buffer, "doesnotexist.exe");
     strcpy(buffer2, "does not exist.exe");
@@ -2733,6 +2754,7 @@ static void test_IsProcessInJob(void)
     ret = pIsProcessInJob(pi.hProcess, job, &out);
     ok(ret, "IsProcessInJob error %lu\n", GetLastError());
     ok(out, "IsProcessInJob returned out=%u\n", out);
+    Sleep(100);
     test_assigned_proc(job, 0);
     test_accounting(job, 1, 0, 0);
 
@@ -4382,6 +4404,7 @@ static void test_ProcThreadAttributeList(void)
     int i;
     struct _PROC_THREAD_ATTRIBUTE_LIST list, expect_list;
     HANDLE handles[4];
+    GROUP_AFFINITY gaff = {.Group = 0, .Mask = 0xffff};
 
     if (!pInitializeProcThreadAttributeList)
     {
@@ -4479,6 +4502,17 @@ static void test_ProcThreadAttributeList(void)
         expect_list.attrs[i].attr = PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE;
         expect_list.attrs[i].size = sizeof(HPCON);
         expect_list.attrs[i].value = handles;
+    }
+
+    ret = pUpdateProcThreadAttribute(&list, 0, PROC_THREAD_ATTRIBUTE_GROUP_AFFINITY, &gaff, sizeof(gaff), NULL, NULL);
+    ok(ret, "got %d gle %ld\n", ret, GetLastError());
+    if (ret)
+    {
+        unsigned int i = expect_list.count++;
+        expect_list.mask |= 1 << ProcThreadAttributeGroupAffinity;
+        expect_list.attrs[i].attr = PROC_THREAD_ATTRIBUTE_GROUP_AFFINITY;
+        expect_list.attrs[i].size = sizeof(GROUP_AFFINITY);
+        expect_list.attrs[i].value = &gaff;
     }
 
     ok(!memcmp(&list, &expect_list, size), "mismatch\n");

@@ -259,13 +259,18 @@ static void test_audioclient(void)
             CoTaskMemFree(pwfx2);
         }
 
+        pwfx2 = (WAVEFORMATEX*)0xDEADF00D;
         hr = IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, pwfx, &pwfx2);
         ok(hr == S_OK, "Valid IsFormatSupported(Shared) call returns %08lx\n", hr);
         ok(pwfx2 == NULL, "pwfx2 is non-null\n");
-        CoTaskMemFree(pwfx2);
 
         hr = IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, NULL, NULL);
         ok(hr == E_POINTER, "IsFormatSupported(NULL) call returns %08lx\n", hr);
+
+        pwfx2 = (WAVEFORMATEX*)0xDEADF00D;
+        hr = IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, NULL, &pwfx2);
+        ok(hr == E_POINTER, "IsFormatSupported(NULL) call returns %08lx\n", hr);
+        ok(pwfx2 == NULL, "pwfx2 is non-null\n");
 
         hr = IAudioClient_IsFormatSupported(ac, AUDCLNT_SHAREMODE_SHARED, pwfx, NULL);
         ok(hr == E_POINTER, "IsFormatSupported(Shared,NULL) call returns %08lx\n", hr);
@@ -602,8 +607,8 @@ static void test_formats(AUDCLNT_SHAREMODE mode, BOOL extensible)
                     if (fmt.Format.nChannels > 2 && !extensible)
                         expected = E_INVALIDARG;
                     todo_wine_if(fmt.Format.nChannels > 2 && !extensible)
-                    ok(hr == expected, "Initialize(shared,  %s%lux%2ux%u) returns %08lx\n",
-                       format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr);
+                    ok(hr == expected, "Initialize(shared,  %s%lux%2ux%u) returns %08lx, expected %08lx\n",
+                       format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr, expected);
                 } else if (hrs == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED)
                     /* Unsupported format implies "create failed" and shadows "not allowed" */
                     ok(hrs == hexcl && (hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED || hr == hrs),
@@ -611,7 +616,6 @@ static void test_formats(AUDCLNT_SHAREMODE mode, BOOL extensible)
                        format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr, hrs);
                 else
                     /* For some drivers Initialize() doesn't match IsFormatSupported(). */
-                    todo_wine_if(fmt.Format.nChannels > 2 && hr == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED)
                     ok(hrs == S_OK ? hr == S_OK || broken(hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED)
                        : hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED || hr == AUDCLNT_E_UNSUPPORTED_FORMAT ||
                          (hr == E_INVALIDARG && fmt.Format.nChannels > 2 && !extensible) || broken(hr == S_OK),
@@ -634,8 +638,8 @@ static void test_formats(AUDCLNT_SHAREMODE mode, BOOL extensible)
                     if (fmt.Format.nChannels > 2 && !extensible)
                         expected = E_INVALIDARG;
                     todo_wine_if(hr != expected)
-                    ok(hr == expected, "Initialize(shared,  %s%lux%2ux%u, RATEADJUST) returns %08lx\n",
-                       format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr);
+                    ok(hr == expected, "Initialize(shared,  %s%lux%2ux%u, RATEADJUST) returns %08lx, expected %08lx\n",
+                       format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr, expected);
                 } else if (hrs == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED)
                     /* Unsupported format implies "create failed" and shadows "not allowed" */
                     ok(hrs == hexcl && (hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED || hr == hrs),
@@ -643,7 +647,6 @@ static void test_formats(AUDCLNT_SHAREMODE mode, BOOL extensible)
                        format_chr, fmt.Format.nSamplesPerSec, fmt.Format.wBitsPerSample, fmt.Format.nChannels, hr, hrs);
                 else
                     /* For some drivers Initialize() doesn't match IsFormatSupported(). */
-                    todo_wine_if(fmt.Format.nChannels > 2 && hr == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED)
                     ok(hrs == S_OK ? hr == S_OK || broken(hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED)
                        : hr == AUDCLNT_E_ENDPOINT_CREATE_FAILED || hr == AUDCLNT_E_UNSUPPORTED_FORMAT ||
                          (hr == E_INVALIDARG && fmt.Format.nChannels > 2 && !extensible) || broken(hr == S_OK),

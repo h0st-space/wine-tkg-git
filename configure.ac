@@ -1486,7 +1486,7 @@ WINE_NOTICE_WITH(pcsclite,[test "x$PCSCLITE_LIBS" = x],
 dnl **** Check for inotify ****
 if test "x$with_inotify" != "xno"
 then
-    WINE_PACKAGE_FLAGS(INOTIFY,[libinotify],,,,
+    WINE_PACKAGE_FLAGS(INOTIFY,[libinotify],[-linotify],,,
         [AC_CHECK_HEADERS([sys/inotify.h])
          AC_CHECK_LIB(inotify,inotify_add_watch,[:],[INOTIFY_LIBS=""],[$INOTIFY_LIBS])])
 fi
@@ -1645,11 +1645,7 @@ then
         [AC_CHECK_HEADERS([ft2build.h])
         if test "$ac_cv_header_ft2build_h" = "yes"
         then
-            WINE_CHECK_SONAME(freetype,FT_Init_FreeType,
-                [AC_DEFINE(HAVE_FREETYPE, 1, [Define if FreeType 2 is installed])
-                 AC_CHECK_TYPES(FT_TrueTypeEngineType,,,[#include <ft2build.h>
-#include FT_MODULE_H])],
-                [FREETYPE_LIBS=""],[$FREETYPE_LIBS])
+            WINE_CHECK_SONAME(freetype,FT_Init_FreeType,,[FREETYPE_LIBS=""],[$FREETYPE_LIBS])
         else
             FREETYPE_CFLAGS=""
             FREETYPE_LIBS=""
@@ -2136,10 +2132,10 @@ AC_CHECK_FUNCS(\
 	posix_fadvise \
 	posix_fallocate \
 	prctl \
+	process_vm_readv \
+	process_vm_writev \
 	sched_getcpu \
 	sched_yield \
-	renameat \
-	renameat2 \
 	setproctitle \
 	setprogname \
 	sigprocmask \
@@ -3769,7 +3765,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(echo \"wine-10.17.r8.g6e5b36c9\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(echo \"wine-10.19.r1.g4741f1ab\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1  ( TkG Staging NTsync )\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg

@@ -914,6 +914,7 @@ static void dump_map_image_view_request( const struct map_image_view_request *re
     fprintf( stderr, " mapping=%04x", req->mapping );
     dump_uint64( ", base=", &req->base );
     dump_uint64( ", size=", &req->size );
+    dump_uint64( ", offset=", &req->offset );
     fprintf( stderr, ", entry=%08x", req->entry );
     fprintf( stderr, ", machine=%04x", req->machine );
 }
@@ -1073,6 +1074,11 @@ static void dump_write_process_memory_request( const struct write_process_memory
     fprintf( stderr, " handle=%04x", req->handle );
     dump_uint64( ", addr=", &req->addr );
     dump_varargs_bytes( ", data=", cur_size );
+}
+
+static void dump_write_process_memory_reply( const struct write_process_memory_reply *req )
+{
+    fprintf( stderr, " written=%u", req->written );
 }
 
 static void dump_create_key_request( const struct create_key_request *req )
@@ -3915,7 +3921,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     NULL,
     NULL,
     (dump_func)dump_read_process_memory_reply,
-    NULL,
+    (dump_func)dump_write_process_memory_reply,
     (dump_func)dump_create_key_reply,
     (dump_func)dump_open_key_reply,
     NULL,
@@ -4508,6 +4514,7 @@ static const struct
     { "INVALID_ACL",                 STATUS_INVALID_ACL },
     { "INVALID_ADDRESS",             STATUS_INVALID_ADDRESS },
     { "INVALID_ADDRESS_COMPONENT",   STATUS_INVALID_ADDRESS_COMPONENT },
+    { "INVALID_BUFFER_SIZE",         STATUS_INVALID_BUFFER_SIZE },
     { "INVALID_CID",                 STATUS_INVALID_CID },
     { "INVALID_CONNECTION",          STATUS_INVALID_CONNECTION },
     { "INVALID_DEVICE_REQUEST",      STATUS_INVALID_DEVICE_REQUEST },
@@ -4526,6 +4533,9 @@ static const struct
     { "INVALID_PIPE_STATE",          STATUS_INVALID_PIPE_STATE },
     { "INVALID_READ_MODE",           STATUS_INVALID_READ_MODE },
     { "INVALID_SECURITY_DESCR",      STATUS_INVALID_SECURITY_DESCR },
+    { "INVALID_USER_BUFFER",         STATUS_INVALID_USER_BUFFER },
+    { "IO_REPARSE_DATA_INVALID",     STATUS_IO_REPARSE_DATA_INVALID },
+    { "IO_REPARSE_TAG_INVALID",      STATUS_IO_REPARSE_TAG_INVALID },
     { "IO_TIMEOUT",                  STATUS_IO_TIMEOUT },
     { "KERNEL_APC",                  STATUS_KERNEL_APC },
     { "KEY_DELETED",                 STATUS_KEY_DELETED },
@@ -4537,6 +4547,7 @@ static const struct
     { "NETWORK_UNREACHABLE",         STATUS_NETWORK_UNREACHABLE },
     { "NOT_ALL_ASSIGNED",            STATUS_NOT_ALL_ASSIGNED },
     { "NOT_A_DIRECTORY",             STATUS_NOT_A_DIRECTORY },
+    { "NOT_A_REPARSE_POINT",         STATUS_NOT_A_REPARSE_POINT },
     { "NOT_FOUND",                   STATUS_NOT_FOUND },
     { "NOT_IMPLEMENTED",             STATUS_NOT_IMPLEMENTED },
     { "NOT_MAPPED_VIEW",             STATUS_NOT_MAPPED_VIEW },
@@ -4559,6 +4570,7 @@ static const struct
     { "OBJECT_PATH_NOT_FOUND",       STATUS_OBJECT_PATH_NOT_FOUND },
     { "OBJECT_PATH_SYNTAX_BAD",      STATUS_OBJECT_PATH_SYNTAX_BAD },
     { "OBJECT_TYPE_MISMATCH",        STATUS_OBJECT_TYPE_MISMATCH },
+    { "PARTIAL_COPY",                STATUS_PARTIAL_COPY },
     { "PENDING",                     STATUS_PENDING },
     { "PIPE_BROKEN",                 STATUS_PIPE_BROKEN },
     { "PIPE_BUSY",                   STATUS_PIPE_BUSY },

@@ -1923,7 +1923,6 @@ enum server_fd_type
 {
     FD_TYPE_INVALID,
     FD_TYPE_FILE,
-    FD_TYPE_SYMLINK,
     FD_TYPE_DIR,
     FD_TYPE_SOCKET,
     FD_TYPE_SERIAL,
@@ -2256,9 +2255,10 @@ struct map_image_view_request
     obj_handle_t mapping;
     client_ptr_t base;
     mem_size_t   size;
+    mem_size_t   offset;
     unsigned int entry;
     unsigned short machine;
-    char __pad_38[2];
+    char __pad_46[2];
 };
 struct map_image_view_reply
 {
@@ -2547,6 +2547,8 @@ struct write_process_memory_request
 struct write_process_memory_reply
 {
     struct reply_header __header;
+    data_size_t written;
+    char __pad_12[4];
 };
 
 
@@ -7115,6 +7117,6 @@ union generic_reply
     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 927
+#define SERVER_PROTOCOL_VERSION 929
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

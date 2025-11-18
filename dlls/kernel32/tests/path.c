@@ -83,9 +83,6 @@ static NTSTATUS (WINAPI *pLdrGetDllPath)(LPCWSTR,ULONG,LPWSTR*,LPWSTR*);
 static BOOL (WINAPI *pCheckNameLegalDOS8Dot3W)(const WCHAR *, char *, DWORD, BOOL *, BOOL *);
 static BOOL (WINAPI *pCheckNameLegalDOS8Dot3A)(const char *, char *, DWORD, BOOL *, BOOL *);
 
-/* Present in Vista+ */
-static BOOL (WINAPI *pCreateSymbolicLinkW)(LPCWSTR, LPCWSTR, DWORD);
-
 /* a structure to deal with wine todos somewhat cleanly */
 typedef struct {
   DWORD shortlen;
@@ -1863,18 +1860,6 @@ static void test_SearchPathA(void)
 
 static void test_SearchPathW(void)
 {
-    static const WCHAR fileext2W[] = {'t','e','s','t','f','i','l','e','.','e','x','t','.','e','x','t','2',0};
-    static const WCHAR fileextW[] = {'t','e','s','t','f','i','l','e','.','e','x','t',0};
-    static const WCHAR testdeprelW[] = {'.','/','t','e','s','t','d','e','p','.','d','l','l',0};
-    static const WCHAR testdepW[] = {'t','e','s','t','d','e','p','.','d','l','l',0};
-    static const WCHAR testdep1W[] = {'t','e','s','t','d','e','p',0};
-    static const WCHAR kernel32dllW[] = {'k','e','r','n','e','l','3','2','.','d','l','l',0};
-    static const WCHAR kernel32W[] = {'k','e','r','n','e','l','3','2',0};
-    static const WCHAR ole32W[] = {'o','l','e','3','2',0};
-    static const WCHAR ext2W[] = {'.','e','x','t','2',0};
-    static const WCHAR extW[] = {'.','e','x','t',0};
-    static const WCHAR dllW[] = {'.','d','l','l',0};
-    static const WCHAR fileW[] = { 0 };
     WCHAR pathW[MAX_PATH], buffW[MAX_PATH], path2W[MAX_PATH];
     WCHAR *ptrW = NULL;
     ULONG_PTR cookie;
@@ -1891,29 +1876,53 @@ static void test_SearchPathW(void)
 
     /* empty filename */
     SetLastError(0xdeadbeef);
-    ret = SearchPathW(pathW, fileW, NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
+    ret = SearchPathW(pathW, L"", NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
     ok(ret == 0, "Expected failure, got %ld\n", ret);
     ok(GetLastError() == ERROR_INVALID_PARAMETER,
       "Expected ERROR_INVALID_PARAMETER, got %lx\n", GetLastError());
 
+    SetLastError(0xdeadbeef);
+    ret = SearchPathW(pathW, L" ", NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
+    ok(ret == 0, "Expected failure, got %ld\n", ret);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER,
+      "Expected ERROR_INVALID_PARAMETER, got %lx\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    ret = SearchPathW(pathW, L"    ", NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
+    ok(ret == 0, "Expected failure, got %ld\n", ret);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER,
+      "Expected ERROR_INVALID_PARAMETER, got %lx\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    ret = SearchPathW(pathW, L"\t", NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
+    ok(ret == 0, "Expected failure, got %ld\n", ret);
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND,
+      "Expected ERROR_FILE_NOT_FOUND, got %lx\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    ret = SearchPathW(pathW, L" abc", NULL, ARRAY_SIZE(buffW), buffW, &ptrW);
+    ok(ret == 0, "Expected failure, got %ld\n", ret);
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND,
+      "Expected ERROR_FILE_NOT_FOUND, got %lx\n", GetLastError());
+
     GetTempPathW(ARRAY_SIZE(pathW), pathW);
     lstrcpyW(path2W, pathW);
-    lstrcatW(path2W, fileext2W);
+    lstrcatW(path2W, L"testfile.ext.ext2");
 
     handle = CreateFileW(path2W, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, 0);
     ok(handle != INVALID_HANDLE_VALUE, "Failed to create test file.\n");
     CloseHandle(handle);
 
     buffW[0] = 0;
-    ret = SearchPathW(pathW, fileextW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(pathW, L"testfile.ext", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(!ret, "Unexpected return value %lu.\n", ret);
 
     buffW[0] = 0;
-    ret = SearchPathW(pathW, fileextW, ext2W, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(pathW, L"testfile.ext", L".ext2", ARRAY_SIZE(buffW), buffW, NULL);
     ok(!ret, "Unexpected return value %lu.\n", ret);
 
     buffW[0] = 0;
-    ret = SearchPathW(pathW, fileext2W, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(pathW, L"testfile.ext.ext2", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(path2W), "got %ld\n", ret);
 
     DeleteFileW(path2W);
@@ -1928,15 +1937,15 @@ static void test_SearchPathW(void)
     delete_manifest_file("main.manifest");
 
     /* search fails without active context */
-    ret = SearchPathW(NULL, testdepW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"testdep.dll", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret == 0, "got %ld\n", ret);
 
-    ret = SearchPathW(NULL, kernel32dllW, NULL, ARRAY_SIZE(path2W), path2W, NULL);
+    ret = SearchPathW(NULL, L"kernel32.dll", NULL, ARRAY_SIZE(path2W), path2W, NULL);
     ok(ret && ret == lstrlenW(path2W), "got %ld\n", ret);
 
     /* full path, name without 'dll' extension */
     GetSystemDirectoryW(pathW, ARRAY_SIZE(pathW));
-    ret = SearchPathW(pathW, kernel32W, NULL, ARRAY_SIZE(path2W), path2W, NULL);
+    ret = SearchPathW(pathW, L"kernel32", NULL, ARRAY_SIZE(path2W), path2W, NULL);
     ok(ret == 0, "got %ld\n", ret);
 
     GetWindowsDirectoryW(pathW, ARRAY_SIZE(pathW));
@@ -1945,33 +1954,33 @@ static void test_SearchPathW(void)
     ok(ret, "failed to activate context, %lu\n", GetLastError());
 
     /* works when activated */
-    ret = SearchPathW(NULL, testdepW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"testdep.dll", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(buffW), "got %ld\n", ret);
 
-    ret = SearchPathW(NULL, testdepW, extW, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"testdep.dll", L".ext", ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(buffW), "got %ld\n", ret);
 
-    ret = SearchPathW(NULL, testdep1W, dllW, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"testdep", L".dll", ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(buffW), "got %ld\n", ret);
 
-    ret = SearchPathW(NULL, testdep1W, extW, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"testdep", L".ext", ARRAY_SIZE(buffW), buffW, NULL);
     ok(!ret, "got %ld\n", ret);
 
     /* name contains path */
-    ret = SearchPathW(NULL, testdeprelW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"./testdep.dll", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(!ret, "got %ld\n", ret);
 
     /* fails with specified path that doesn't contain this file */
-    ret = SearchPathW(pathW, testdepW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(pathW, L"testdep.dll", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(!ret, "got %ld\n", ret);
 
     /* path is redirected for wellknown names too, meaning it takes precedence over normal search order */
-    ret = SearchPathW(NULL, kernel32dllW, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"kernel32.dll", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(buffW), "got %ld\n", ret);
     ok(lstrcmpW(buffW, path2W), "got wrong path %s, %s\n", wine_dbgstr_w(buffW), wine_dbgstr_w(path2W));
 
     /* path is built using on manifest file name */
-    ret = SearchPathW(NULL, ole32W, NULL, ARRAY_SIZE(buffW), buffW, NULL);
+    ret = SearchPathW(NULL, L"ole32", NULL, ARRAY_SIZE(buffW), buffW, NULL);
     ok(ret && ret == lstrlenW(buffW), "got %ld\n", ret);
 
     ret = DeactivateActCtx(0, cookie);
@@ -2109,7 +2118,6 @@ static void init_pointers(void)
     MAKEFUNC(SetDefaultDllDirectories);
     MAKEFUNC(CheckNameLegalDOS8Dot3W);
     MAKEFUNC(CheckNameLegalDOS8Dot3A);
-    MAKEFUNC(CreateSymbolicLinkW);
     mod = GetModuleHandleA("ntdll.dll");
     MAKEFUNC(LdrGetDllPath);
     MAKEFUNC(RtlGetExePath);
@@ -2695,95 +2703,6 @@ static void test_LdrGetDllPath(void)
     SetEnvironmentVariableW( pathW, old_path );
 }
 
-static void test_CreateSymbolicLink(void)
-{
-    static const WCHAR target_fileW[] = {'t','a','r','g','e','t','_','f','i','l','e',0};
-    static const WCHAR target_dirW[] = {'t','a','r','g','e','t','_','d','i','r',0};
-    static const WCHAR linkW[] = {'l','i','n','k',0};
-    static const WCHAR fooW[] = {'f','o','o',0};
-    static WCHAR volW[] = {'c',':','\\',0};
-    static const WCHAR dotW[] = {'.',0};
-    WCHAR path[MAX_PATH], old_path[MAX_PATH], tmp[MAX_PATH];
-    DWORD dwLen, dwFlags;
-    TOKEN_PRIVILEGES tp;
-    HANDLE token;
-    LUID luid;
-    BOOL bret;
-    HANDLE h;
-
-    if (!pCreateSymbolicLinkW)
-    {
-        win_skip( "CreateSymbolicLink isn't available\n" );
-        return;
-    }
-
-    /* Create a temporary folder for the symlink tests */
-    GetTempFileNameW( dotW, fooW, 0, path );
-    DeleteFileW( path );
-    if (!CreateDirectoryW( path, NULL ))
-    {
-        win_skip("Unable to create a temporary reparse point directory.\n");
-        return;
-    }
-    GetCurrentDirectoryW( sizeof(old_path)/sizeof(WCHAR), old_path );
-    SetCurrentDirectoryW( path );
-
-    /* Check that the volume this folder is located on supports reparse points */
-    GetFullPathNameW( path, sizeof(tmp)/sizeof(WCHAR), tmp, NULL );
-    volW[0] = tmp[0];
-    GetVolumeInformationW( volW, 0, 0, 0, &dwLen, &dwFlags, 0, 0 );
-    if (!(dwFlags & FILE_SUPPORTS_REPARSE_POINTS))
-    {
-        skip("File system does not support reparse points.\n");
-        goto cleanup;
-    }
-
-    /* Establish permissions for symlink creation */
-    bret = OpenProcessToken( GetCurrentProcess(), TOKEN_ALL_ACCESS, &token );
-    ok(bret, "OpenProcessToken failed: %ld\n", GetLastError());
-    bret = LookupPrivilegeValueA( NULL, "SeCreateSymbolicLinkPrivilege", &luid );
-    todo_wine ok(bret || broken(!bret && GetLastError() == ERROR_NO_SUCH_PRIVILEGE) /* winxp */,
-                 "LookupPrivilegeValue failed: %lu\n", GetLastError());
-    if (bret)
-    {
-        tp.PrivilegeCount = 1;
-        tp.Privileges[0].Luid = luid;
-        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-        bret = AdjustTokenPrivileges( token, FALSE, &tp, 0, NULL, NULL );
-        ok(bret, "AdjustTokenPrivileges failed: %ld\n", GetLastError());
-    }
-    if ((!bret && GetLastError() != ERROR_NO_SUCH_PRIVILEGE) || GetLastError() == ERROR_NOT_ALL_ASSIGNED)
-    {
-        win_skip("Insufficient permissions to perform symlink tests.\n");
-        goto cleanup;
-    }
-
-    /* Create a destination folder and file for symlinks to target */
-    bret = CreateDirectoryW( target_dirW, NULL );
-    ok(bret, "Failed to create symlink target directory.\n");
-    h = CreateFileW( target_fileW, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL );
-    ok(h != INVALID_HANDLE_VALUE, "Failed to create symlink target file.\n");
-    CloseHandle( h );
-
-    /* Create a directory symbolic link */
-    bret = CreateSymbolicLinkW( linkW, target_dirW, SYMBOLIC_LINK_FLAG_DIRECTORY );
-    ok(bret, "Failed to create directory symbolic link! (0x%lx)\n", GetLastError());
-    bret = RemoveDirectoryW( linkW );
-    ok(bret, "Failed to remove directory symbolic link! (0x%lx)\n", GetLastError());
-
-    /* Create a file symbolic link */
-    bret = CreateSymbolicLinkW( linkW, target_fileW, 0x0 );
-    ok(bret, "Failed to create file symbolic link! (0x%lx)\n", GetLastError());
-    bret = DeleteFileW( linkW );
-    ok(bret, "Failed to remove file symbolic link! (0x%lx)\n", GetLastError());
-
-cleanup:
-    DeleteFileW( target_fileW );
-    RemoveDirectoryW( target_dirW );
-    SetCurrentDirectoryW( old_path );
-    RemoveDirectoryW( path );
-}
-
 START_TEST(path)
 {
     CHAR origdir[MAX_PATH],curdir[MAX_PATH], curDrive, otherDrive;
@@ -2813,5 +2732,4 @@ START_TEST(path)
     test_RtlGetSearchPath();
     test_RtlGetExePath();
     test_LdrGetDllPath();
-    test_CreateSymbolicLink();
 }
