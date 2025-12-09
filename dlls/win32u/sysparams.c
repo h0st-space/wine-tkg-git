@@ -64,6 +64,7 @@ static const char devpropkey_device_ispresentA[] = "Properties\\{540B947E-8B40-4
 static const char devpropkey_monitor_gpu_luidA[] = "Properties\\{CA085853-16CE-48AA-B114-DE9C72334223}\\0001";
 static const char devpropkey_monitor_output_idA[] = "Properties\\{CA085853-16CE-48AA-B114-DE9C72334223}\\0002";
 static const char wine_devpropkey_monitor_rcworkA[] = "Properties\\{233a9ef3-afc4-4abd-b564-c32f21f1535b}\\0004";
+static const char wine_devpropkey_monitor_hdr_enabledA[] = "Properties\\{233a9ef3-afc4-4abd-b564-c32f21f1535b}\\0006";
 
 static const WCHAR linkedW[] = {'L','i','n','k','e','d',0};
 static const WCHAR symbolic_link_valueW[] =
@@ -155,6 +156,7 @@ struct monitor
     RECT rc_work;
     BOOL is_clone;
     struct edid_monitor_info edid_info;
+    BOOL hdr_enabled;
 };
 
 static struct list gpus = LIST_INIT(gpus);
@@ -508,7 +510,7 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
     else return FALSE;
 
     if (!query_reg_ascii_value( hkey, key, value, sizeof(value_buf) )) return FALSE;
-    memcpy( &mode->dmFields, value->Data, sizeof(*mode) - offsetof(DEVMODEW, dmFields) );
+    memcpy( &mode->dmFields, value->Data, offsetof(DEVMODEW, dmICMMethod) - offsetof(DEVMODEW, dmFields) );
     return TRUE;
 }
 
@@ -552,7 +554,7 @@ static BOOL source_set_registry_settings( const struct source *source, const DEV
 
 static BOOL source_get_current_settings( const struct source *source, DEVMODEW *mode )
 {
-    memcpy( &mode->dmFields, &source->current.dmFields, sizeof(*mode) - offsetof(DEVMODEW, dmFields) );
+    memcpy( &mode->dmFields, &source->current.dmFields, offsetof(DEVMODEW, dmICMMethod) - offsetof(DEVMODEW, dmFields) );
     if (source->depth) mode->dmBitsPerPel = source->depth;
     return TRUE;
 }
@@ -755,6 +757,16 @@ static BOOL read_monitor_from_registry( struct monitor *monitor )
         NtClose( subkey );
     }
 
+    /* WINE_DEVPROPKEY_MONITOR_HDR_ENABLED */
+    size = query_reg_subkey_value( hkey, wine_devpropkey_monitor_hdr_enabledA,
+                                   value, sizeof(buffer) );
+    if (size != sizeof(monitor->hdr_enabled))
+    {
+        NtClose( hkey );
+        return FALSE;
+    }
+    monitor->hdr_enabled = *(const BOOL *)value->Data;
+
     NtClose( hkey );
     return TRUE;
 }
@@ -775,7 +787,7 @@ static BOOL read_source_monitor_path( HKEY hkey, UINT index, char *path )
     return TRUE;
 }
 
-static void reg_empty_key( HKEY root, const char *key_name )
+static void reg_empty_key( HKEY root, const char *key_name, BOOL subkeys_only )
 {
     char buffer[4096];
     KEY_NODE_INFORMATION *key = (KEY_NODE_INFORMATION *)buffer;
@@ -786,10 +798,13 @@ static void reg_empty_key( HKEY root, const char *key_name )
     while (!NtEnumerateKey( hkey, 0, KeyNodeInformation, key, sizeof(buffer), &size ))
         reg_delete_tree( hkey, key->Name, key->NameLength );
 
-    while (!NtEnumerateValueKey( hkey, 0, KeyValueFullInformation, value, sizeof(buffer), &size ))
+    if (!subkeys_only)
     {
-        UNICODE_STRING name = { value->NameLength, value->NameLength, value->Name };
-        NtDeleteValueKey( hkey, &name );
+        while (!NtEnumerateValueKey( hkey, 0, KeyValueFullInformation, value, sizeof(buffer), &size ))
+        {
+            UNICODE_STRING name = { value->NameLength, value->NameLength, value->Name };
+            NtDeleteValueKey( hkey, &name );
+        }
     }
 
     if (hkey != root) NtClose( hkey );
@@ -846,27 +861,27 @@ static void prepare_devices(void)
     if (!video_key) video_key = reg_create_ascii_key( NULL, devicemap_video_keyA, REG_OPTION_VOLATILE, NULL );
 
     /* delete monitors */
-    reg_empty_key( enum_key, "DISPLAY" );
+    reg_empty_key( enum_key, "DISPLAY", FALSE );
     snprintf( buffer, sizeof(buffer), "Class\\%s", guid_devclass_monitorA );
     hkey = reg_create_ascii_key( control_key, buffer, 0, NULL );
-    reg_empty_key( hkey, NULL );
+    reg_empty_key( hkey, NULL, FALSE );
     set_reg_ascii_value( hkey, "", "Monitors" );
     set_reg_ascii_value( hkey, "Class", "Monitor" );
     NtClose( hkey );
 
     /* delete sources */
-    reg_empty_key( video_key, NULL );
+    reg_empty_key( video_key, NULL, FALSE );
 
     /* clean GPUs */
     snprintf( buffer, sizeof(buffer), "Class\\%s", guid_devclass_displayA );
     hkey = reg_create_ascii_key( control_key, buffer, 0, NULL );
-    reg_empty_key( hkey, NULL );
+    reg_empty_key( hkey, NULL, FALSE );
     set_reg_ascii_value( hkey, "", "Display adapters" );
     set_reg_ascii_value( hkey, "Class", "Display" );
     NtClose( hkey );
     if ((hkey = reg_create_ascii_key( NULL, directx_keyA, 0, NULL )))
     {
-        reg_empty_key( hkey, NULL );
+        reg_empty_key( hkey, NULL, TRUE );
         NtClose( hkey );
     }
 
@@ -1925,6 +1940,14 @@ static BOOL write_monitor_to_registry( struct monitor *monitor, const BYTE *edid
         NtClose( subkey );
     }
 
+    /* WINE_DEVPROPKEY_MONITOR_HDR_ENABLED */
+    if ((subkey = reg_create_ascii_key( hkey, wine_devpropkey_monitor_hdr_enabledA, 0, NULL )))
+    {
+        set_reg_value( subkey, NULL, 0xffff0000 | DEVPROP_TYPE_BOOLEAN,
+                       &monitor->hdr_enabled, sizeof(monitor->hdr_enabled) );
+        NtClose( subkey );
+    }
+
     NtClose( hkey );
 
 
@@ -1954,6 +1977,7 @@ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
     monitor->id = source->monitor_count;
     monitor->output_id = ctx->monitor_count;
     monitor->rc_work = gdi_monitor->rc_work;
+    monitor->hdr_enabled = gdi_monitor->hdr_enabled;
 
     TRACE( "%u %s %s\n", monitor->id, wine_dbgstr_rect(&gdi_monitor->rc_monitor), wine_dbgstr_rect(&gdi_monitor->rc_work) );
 
@@ -2009,6 +2033,8 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
         { 640,  480},
         { 800,  600},
         {1024,  768},
+        {1152,  864},
+        {1280,  960},
         {1600, 1200},
         /* 16:9 */
         { 960,  540},
@@ -4421,7 +4447,7 @@ static BOOL source_enum_display_settings( const struct source *source, UINT inde
             continue;
         if (!i--)
         {
-            memcpy( &devmode->dmFields, &source_mode->dmFields, devmode->dmSize - FIELD_OFFSET(DEVMODEW, dmFields) );
+            memcpy( &devmode->dmFields, &source_mode->dmFields, offsetof(DEVMODEW, dmICMMethod) - FIELD_OFFSET(DEVMODEW, dmFields) );
             devmode->dmDisplayFlags &= ~WINE_DM_UNSUPPORTED;
             return TRUE;
         }
@@ -7764,11 +7790,52 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEAD
         unlock_display_devices();
         return ret;
     }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO:
+    {
+        DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *color_info = (DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *)packet;
+        struct monitor *monitor;
+
+        FIXME( "DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO semi-stub.\n" );
+
+        if (packet->size < sizeof(*color_info))
+            return STATUS_INVALID_PARAMETER;
+
+        if (!lock_display_devices( FALSE )) return STATUS_UNSUCCESSFUL;
+
+        LIST_FOR_EACH_ENTRY(monitor, &monitors, struct monitor, entry)
+        {
+            if (color_info->header.id != monitor->output_id) continue;
+            if (memcmp( &color_info->header.adapterId, &monitor->source->gpu->luid,
+                        sizeof(monitor->source->gpu->luid) ))
+                continue;
+
+            if (monitor->hdr_enabled)
+            {
+                color_info->advancedColorSupported = 1;
+                color_info->advancedColorEnabled = 1;
+                color_info->bitsPerColorChannel = 10;
+            }
+            else
+            {
+                color_info->advancedColorSupported = 0;
+                color_info->advancedColorEnabled = 0;
+                color_info->bitsPerColorChannel = 8;
+            }
+            color_info->wideColorEnforced = 0;
+            color_info->advancedColorForceDisabled = 0;
+            color_info->colorEncoding = DISPLAYCONFIG_COLOR_ENCODING_RGB;
+
+            ret = STATUS_SUCCESS;
+            break;
+        }
+
+        unlock_display_devices();
+        return ret;
+    }
     case DISPLAYCONFIG_DEVICE_INFO_SET_TARGET_PERSISTENCE:
     case DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_BASE_TYPE:
     case DISPLAYCONFIG_DEVICE_INFO_GET_SUPPORT_VIRTUAL_RESOLUTION:
     case DISPLAYCONFIG_DEVICE_INFO_SET_SUPPORT_VIRTUAL_RESOLUTION:
-    case DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO:
     case DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE:
     case DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL:
     default:

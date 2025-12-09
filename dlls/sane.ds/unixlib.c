@@ -295,15 +295,16 @@ static NTSTATUS start_device( void *args )
 {
     SANE_Status status;
 
-    if (device_started) return STATUS_SUCCESS;
     status = sane_start( device_handle );
     if (status != SANE_STATUS_GOOD)
     {
         TRACE("sane_start returns %s\n", sane_strstatus(status));
-        return STATUS_DEVICE_NOT_CONNECTED;
     }
-    device_started = TRUE;
-    return STATUS_SUCCESS;
+    else
+    {
+        device_started = TRUE;
+    }
+    return status;
 }
 
 static NTSTATUS cancel_device( void *args )
@@ -398,7 +399,8 @@ static NTSTATUS option_find_descriptor( void *args )
 
     for (i = 1; (opt = sane_get_option_descriptor( device_handle, i )) != NULL; i++)
     {
-        if (params->type != map_type( opt->type )) continue;
+        if (params->type >= 0 &&
+            params->type != map_type( opt->type )) continue;
         if (strcmp( params->name, opt->name )) continue;
         descr->optno = i;
         map_descr( descr, opt );

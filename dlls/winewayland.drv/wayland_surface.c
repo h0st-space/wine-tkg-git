@@ -138,34 +138,6 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener =
     xdg_toplevel_handle_close
 };
 
-void wp_fractional_scale_handle_scale(void *user_data,
-        struct wp_fractional_scale_v1 *fractional_scale_v1, uint32_t scale)
-{
-    struct wayland_win_data *data;
-    struct wayland_surface *surface;
-    HWND hwnd = user_data;
-    assert(hwnd);
-
-    if ((data = wayland_win_data_get(hwnd)))
-    {
-        if((surface = data->wayland_surface))
-        {
-            surface->window.fractional_scale = scale / 120.0;
-            surface->window.scale =
-                surface->window.fractional_scale * NtUserGetSystemDpiForProcess(0) / 96.0;
-
-            TRACE("Got scale %lf\n", surface->window.fractional_scale);
-        }
-
-        wayland_win_data_release(data);
-    }
-}
-
-static const struct wp_fractional_scale_v1_listener wp_fractional_scale_listener =
-{
-    wp_fractional_scale_handle_scale
-};
-
 /**********************************************************************
  *          wayland_surface_create
  *
@@ -202,21 +174,7 @@ struct wayland_surface *wayland_surface_create(HWND hwnd)
         goto err;
     }
 
-    /* in case we don't get notification */
-    surface->window.fractional_scale = 1.0;
     surface->window.scale = 1.0;
-
-    if (process_wayland.wp_fractional_scale_manager_v1)
-    {
-        surface->wp_fractional_scale_v1 =
-            wp_fractional_scale_manager_v1_get_fractional_scale(
-                process_wayland.wp_fractional_scale_manager_v1,
-                surface->wl_surface);
-        wp_fractional_scale_v1_add_listener(
-            surface->wp_fractional_scale_v1,
-            &wp_fractional_scale_listener,
-            hwnd);
-    }
 
     return surface;
 
@@ -253,12 +211,6 @@ void wayland_surface_destroy(struct wayland_surface *surface)
     pthread_mutex_unlock(&process_wayland.text_input.mutex);
 
     wayland_surface_clear_role(surface);
-
-    if (surface->wp_fractional_scale_v1)
-    {
-        wp_fractional_scale_v1_destroy(surface->wp_fractional_scale_v1);
-        surface->wp_fractional_scale_v1 = NULL;
-    }
 
     if (surface->wp_viewport)
     {
@@ -1066,6 +1018,18 @@ static void wayland_client_surface_detach(struct client_surface *client)
 
 static void wayland_client_surface_update(struct client_surface *client)
 {
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+    HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    struct wayland_win_data *data;
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if (toplevel && NtUserIsWindowVisible(hwnd))
+        wayland_client_surface_attach(surface, toplevel);
+    else
+        wayland_client_surface_attach(surface, NULL);
+
+    wayland_win_data_release(data);
 }
 
 static void wayland_client_surface_present(struct client_surface *client, HDC hdc)

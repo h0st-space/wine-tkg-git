@@ -663,7 +663,7 @@ static void set_focus( Display *display, HWND focus, Time time )
 
     if (!is_net_supported( x11drv_atom(_NET_ACTIVE_WINDOW) ))
     {
-        NtUserSetForegroundWindow( focus );
+        NtUserSetForegroundWindowInternal( focus );
 
         threadinfo.cbSize = sizeof(threadinfo);
         NtUserGetGUIThreadInfo( 0, &threadinfo );
@@ -885,7 +885,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
         if (!hwnd) hwnd = x11drv_thread_data()->last_focus;
         if (hwnd && can_activate_window(hwnd)) set_focus( event->display, hwnd, CurrentTime );
     }
-    else NtUserSetForegroundWindow( hwnd );
+    else NtUserSetForegroundWindowInternal( hwnd );
     return TRUE;
 }
 
@@ -916,7 +916,7 @@ static void focus_out( Display *display , HWND hwnd )
         if (hwnd == NtUserGetForegroundWindow())
         {
             TRACE( "lost focus, setting fg to desktop\n" );
-            NtUserSetForegroundWindow( NtUserGetDesktopWindow() );
+            NtUserSetForegroundWindowInternal( NtUserGetDesktopWindow() );
         }
     }
  }
@@ -1291,6 +1291,18 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
     NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
 }
 
+static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )
+{
+    struct x11drv_win_data *data;
+    XWMHints empty = {0}, *hints;
+
+    if (!(data = get_win_data( hwnd ))) return;
+    hints = event->state == PropertyNewValue ? XGetWMHints( event->display, event->window ) : &empty;
+    window_wm_hints_notify( data, event->serial, hints );
+    if (hints != &empty) XFree( hints );
+    release_win_data( data );
+}
+
 static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
 {
     struct x11drv_win_data *data;
@@ -1299,6 +1311,23 @@ static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
     if (!(data = get_win_data( hwnd ))) return;
     if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );
     window_mwm_hints_notify( data, event->serial, &hints );
+    release_win_data( data );
+}
+
+static void handle_wm_normal_hints_notify( HWND hwnd, XPropertyEvent *event )
+{
+    struct x11drv_win_data *data;
+    XSizeHints *hints;
+    long len = 0;
+
+    if (!(data = get_win_data( hwnd ))) return;
+    if ((hints = XAllocSizeHints()))
+    {
+        if (event->state == PropertyNewValue) XGetWMNormalHints( event->display, event->window, hints, &len );
+        if (len < sizeof(*hints)) memset( (char *)hints + len, 0, sizeof(*hints) - len );
+        window_wm_normal_hints_notify( data, event->serial, hints );
+        XFree( hints );
+    }
     release_win_data( data );
 }
 
@@ -1336,7 +1365,9 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
     if (event->atom == x11drv_atom(WM_STATE)) handle_wm_state_notify( hwnd, event );
     if (event->atom == x11drv_atom(_XEMBED_INFO)) handle_xembed_info_notify( hwnd, event );
     if (event->atom == x11drv_atom(_NET_WM_STATE)) handle_net_wm_state_notify( hwnd, event );
+    if (event->atom == x11drv_atom(WM_HINTS)) handle_wm_hints_notify( hwnd, event );
     if (event->atom == x11drv_atom(_MOTIF_WM_HINTS)) handle_mwm_hints_notify( hwnd, event );
+    if (event->atom == x11drv_atom(WM_NORMAL_HINTS)) handle_wm_normal_hints_notify( hwnd, event );
     if (event->atom == x11drv_atom(_NET_SUPPORTED)) handle_net_supported_notify( event );
     if (event->atom == x11drv_atom(_NET_ACTIVE_WINDOW)) handle_net_active_window( event );
 

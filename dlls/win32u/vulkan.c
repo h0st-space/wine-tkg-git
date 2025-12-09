@@ -43,8 +43,6 @@ static PFN_vkEnumerateInstanceExtensionProperties p_vkEnumerateInstanceExtension
 static void *vulkan_handle;
 static struct vulkan_funcs vulkan_funcs;
 
-#ifdef SONAME_LIBVULKAN
-
 WINE_DECLARE_DEBUG_CHANNEL(fps);
 
 static const struct vulkan_driver_funcs *driver_funcs;
@@ -456,6 +454,10 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
         instance->obj.extensions.has_VK_KHR_external_memory_capabilities = 1;
     }
 
+    /* VK_KHR_win32_keyed_mutex only requires external memory extensions, but we will use
+     * external semaphore fds to implement it, so we enable the instance extensions too */
+    instance->obj.extensions.has_VK_KHR_external_semaphore_capabilities = 1;
+
     if (!(extensions = mem_alloc( pool, sizeof(instance->obj.extensions) * 8 * sizeof(*extensions) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
 #define USE_VK_EXT(x) if (instance->obj.extensions.has_ ## x) extensions[count++] = #x;
     ALL_VK_INSTANCE_EXTS
@@ -537,7 +539,8 @@ static VkResult init_physical_device( struct vulkan_physical_device *physical_de
         WARN( "Cannot export WOW64 memory without VK_EXT_map_memory_placed\n" );
         extensions.has_VK_KHR_external_memory_win32 = 0;
     }
-    extensions.has_VK_KHR_win32_keyed_mutex = extensions.has_VK_KHR_timeline_semaphore;
+    extensions.has_VK_KHR_win32_keyed_mutex = extensions.has_VK_KHR_timeline_semaphore &&
+                                              extensions.has_VK_KHR_external_semaphore_fd;
 
     /* filter out unsupported client device extensions */
 #define USE_VK_EXT(x) client_physical_device->extensions.has_ ## x = extensions.has_ ## x;
@@ -594,7 +597,7 @@ static VkResult win32u_vkCreateInstance( const VkInstanceCreateInfo *client_crea
                                          VkInstance *client_instance_ptr )
 {
     VkInstanceCreateInfo *create_info = (VkInstanceCreateInfo *)client_create_info; /* cast away const, chain has been copied in the thunks */
-    VkInstance host_instance, client_instance = *client_instance_ptr;
+    VkInstance host_instance = VK_NULL_HANDLE, client_instance = *client_instance_ptr;
     struct vulkan_physical_device *physical_devices;
     struct mempool pool = {0};
     struct instance *instance;
@@ -677,7 +680,11 @@ static VkResult convert_device_create_info( struct vulkan_physical_device *physi
     info->ppEnabledLayerNames = NULL;
 
     if (device->extensions.has_VK_KHR_win32_keyed_mutex)
+    {
         device->extensions.has_VK_KHR_timeline_semaphore = 1;
+        device->extensions.has_VK_KHR_external_semaphore_fd = 1;
+        device->extensions.has_VK_KHR_external_semaphore = 1;
+    }
 
     driver_funcs->p_map_device_extensions( &device->extensions );
     device->extensions.has_VK_KHR_win32_keyed_mutex = 0;
@@ -2428,7 +2435,10 @@ static VkResult win32u_vkCreateSemaphore( VkDevice client_device, const VkSemaph
             break;
         }
 
-        if (!(semaphore->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &semaphore->global ))) goto failed;
+        semaphore->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &semaphore->global );
+        close( fd );
+
+        if (!semaphore->local) goto failed;
         if (nt_shared && !(semaphore->shared = create_shared_semaphore_handle( semaphore->local, &export_win32 ))) goto failed;
     }
 
@@ -2653,7 +2663,10 @@ static VkResult win32u_vkCreateFence( VkDevice client_device, const VkFenceCreat
             break;
         }
 
-        if (!(fence->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &fence->global ))) goto failed;
+        fence->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &fence->global );
+        close( fd );
+
+        if (!fence->local) goto failed;
         if (nt_shared && !(fence->shared = create_shared_semaphore_handle( fence->local, &export_win32 ))) goto failed;
     }
 
@@ -2973,11 +2986,13 @@ static void vulkan_init_once(void)
     uint32_t count = 0;
     VkResult res;
 
-    if (!(vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW )))
-    {
-        ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
-        return;
-    }
+#ifdef SONAME_LIBVULKAN
+    vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
+    if (!vulkan_handle) ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
+#else
+    ERR( "Wine was built without Vulkan support.\n" );
+#endif
+    if (!vulkan_handle) return;
 
 #define LOAD_FUNCPTR( f )                                                                          \
     if (!(p_##f = dlsym( vulkan_handle, #f )))                                                     \
@@ -3039,15 +3054,6 @@ failed:
     free( properties );
 }
 
-#else /* SONAME_LIBVULKAN */
-
-static void vulkan_init_once(void)
-{
-    ERR( "Wine was built without Vulkan support.\n" );
-}
-
-#endif /* SONAME_LIBVULKAN */
-
 /***********************************************************************
  *      __wine_get_vulkan_driver  (win32u.so)
  */
@@ -3080,6 +3086,8 @@ struct vulkan_instance *vulkan_instance_create( const struct vulkan_instance_ext
     struct instance_wrapper *wrapper;
     UINT device_count = 8;
     VkResult res;
+
+    if (!funcs) return NULL;
 
     create_info.ppEnabledExtensionNames = extension_names;
 #define USE_VK_EXT(x) if (extensions->has_ ## x) extension_names[create_info.enabledExtensionCount++] = #x;

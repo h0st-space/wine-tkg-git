@@ -60,6 +60,7 @@ enum vkd3d_shader_api_version
     VKD3D_SHADER_API_VERSION_1_15,
     VKD3D_SHADER_API_VERSION_1_16,
     VKD3D_SHADER_API_VERSION_1_17,
+    VKD3D_SHADER_API_VERSION_1_18,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_API_VERSION),
 };
@@ -1038,6 +1039,25 @@ enum vkd3d_shader_parameter_name
     VKD3D_SHADER_PARAMETER_NAME_BUMP_LUMINANCE_OFFSET_3,
     VKD3D_SHADER_PARAMETER_NAME_BUMP_LUMINANCE_OFFSET_4,
     VKD3D_SHADER_PARAMETER_NAME_BUMP_LUMINANCE_OFFSET_5,
+    /**
+     * A mask of projected textures.
+     *
+     * When this parameter is provided to a shader model 1.0-1.3 pixel shader,
+     * for each nonzero bit of this mask, the corresponding texture will be
+     * projected. That is, it will have its coordinates divided by their W
+     * component before sampling.
+     *
+     * The default value is zero, i.e. no textures are projected.
+     *
+     * The data type for this parameter must be
+     * VKD3D_SHADER_PARAMETER_DATA_TYPE_UINT32.
+     *
+     * Only VKD3D_SHADER_PARAMETER_TYPE_IMMEDIATE_CONSTANT is supported in this
+     * version of vkd3d-shader.
+     *
+     * \since 1.19
+     */
+    VKD3D_SHADER_PARAMETER_NAME_PROJECTED_TEXTURE_MASK,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_PARAMETER_NAME),
 };
@@ -2952,6 +2972,7 @@ VKD3D_SHADER_API const enum vkd3d_shader_target_type *vkd3d_shader_get_supported
  * - vkd3d_shader_scan_descriptor_info
  * - vkd3d_shader_scan_hull_shader_tessellation_info
  * - vkd3d_shader_scan_signature_info
+ * - vkd3d_shader_scan_thread_group_size_info
  * - vkd3d_shader_spirv_domain_shader_target_info
  * - vkd3d_shader_spirv_target_info
  * - vkd3d_shader_transform_feedback_info
@@ -3140,10 +3161,21 @@ VKD3D_SHADER_API int vkd3d_shader_convert_root_signature(struct vkd3d_shader_ver
  * \param compile_info A chained structure containing scan parameters.
  * \n
  * The scanner supports the following chained structures:
+ * - vkd3d_shader_d3dbc_source_info
+ * - vkd3d_shader_descriptor_offset_info
+ * - vkd3d_shader_hlsl_source_info
+ * - vkd3d_shader_interface_info
+ * - vkd3d_shader_parameter_info
+ * - vkd3d_shader_preprocess_info
  * - vkd3d_shader_scan_combined_resource_sampler_info
  * - vkd3d_shader_scan_descriptor_info
  * - vkd3d_shader_scan_hull_shader_tessellation_info
  * - vkd3d_shader_scan_signature_info
+ * - vkd3d_shader_scan_thread_group_size_info
+ * - vkd3d_shader_spirv_domain_shader_target_info
+ * - vkd3d_shader_spirv_target_info
+ * - vkd3d_shader_transform_feedback_info
+ * - vkd3d_shader_varying_map_info
  * \n
  * Although the \a compile_info parameter is read-only, chained structures
  * passed to this function need not be, and may serve as output parameters,

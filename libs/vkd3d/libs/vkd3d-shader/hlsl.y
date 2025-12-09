@@ -544,16 +544,9 @@ static void check_loop_attributes(struct hlsl_ctx *ctx, const struct parse_attri
         hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX, "Unroll attribute can't be used with 'fastopt' attribute.");
 }
 
-static struct hlsl_default_value evaluate_static_expression(struct hlsl_ctx *ctx,
-        struct hlsl_block *block, struct hlsl_type *dst_type, const struct vkd3d_shader_location *loc)
+static bool is_static_expression(struct hlsl_block *block)
 {
-    struct hlsl_default_value ret = {0};
     struct hlsl_ir_node *node;
-    struct hlsl_block expr;
-    struct hlsl_src src;
-
-    if (node_from_block(block)->data_type->class == HLSL_CLASS_ERROR)
-        return ret;
 
     LIST_FOR_EACH_ENTRY(node, &block->instrs, struct hlsl_ir_node, entry)
     {
@@ -582,11 +575,27 @@ static struct hlsl_default_value evaluate_static_expression(struct hlsl_ctx *ctx
             case HLSL_IR_SWITCH:
             case HLSL_IR_STATEBLOCK_CONSTANT:
             case HLSL_IR_SYNC:
-                hlsl_error(ctx, &node->loc, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX,
-                        "Expected literal expression.");
-                break;
+                return false;
         }
     }
+
+    return true;
+}
+
+static struct hlsl_default_value evaluate_static_expression(struct hlsl_ctx *ctx,
+        struct hlsl_block *block, struct hlsl_type *dst_type, const struct vkd3d_shader_location *loc)
+{
+    struct hlsl_default_value ret = {0};
+    struct hlsl_ir_node *node;
+    struct hlsl_block expr;
+    struct hlsl_src src;
+
+    if (node_from_block(block)->data_type->class == HLSL_CLASS_ERROR)
+        return ret;
+
+    if (!is_static_expression(block))
+        hlsl_error(ctx, &node_from_block(block)->loc, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX,
+                "Expected literal expression.");
 
     if (!hlsl_clone_block(ctx, &expr, &ctx->static_initializers))
         return ret;
@@ -2246,18 +2255,14 @@ static void initialize_var_components(struct hlsl_ctx *ctx, struct hlsl_block *i
 
             if (src->type == HLSL_IR_COMPILE || src->type == HLSL_IR_SAMPLER_STATE)
             {
-                if (hlsl_is_numeric_type(dst_comp_type))
+                /* Default values are discarded if they contain an object
+                 * literal expression for a numeric component. */
+                if (hlsl_is_numeric_type(dst_comp_type) && dst->default_values)
                 {
-                    /* Default values are discarded if they contain an object
-                     * literal expression for a numeric component. */
-                    if (dst->default_values)
-                    {
-                        hlsl_warning(ctx, &src->loc, VKD3D_SHADER_WARNING_HLSL_IGNORED_DEFAULT_VALUE,
-                                "Component %u in variable '%s' initializer is object literal. Default values discarded.",
-                                k, dst->name);
-                        vkd3d_free(dst->default_values);
-                        dst->default_values = NULL;
-                    }
+                    hlsl_warning(ctx, &src->loc, VKD3D_SHADER_WARNING_HLSL_IGNORED_DEFAULT_VALUE,
+                            "Component %u in variable '%s' initializer is object literal. Default values discarded.",
+                            k, dst->name);
+                    hlsl_free_default_values(dst);
                 }
             }
             else
@@ -2268,6 +2273,8 @@ static void initialize_var_components(struct hlsl_ctx *ctx, struct hlsl_block *i
 
                 if (dst->default_values)
                     dst->default_values[*store_index] = default_value;
+                else
+                    hlsl_free_default_value(&default_value);
 
                 hlsl_block_cleanup(&block);
             }
@@ -2672,7 +2679,7 @@ static struct hlsl_block *initialize_vars(struct hlsl_ctx *ctx, struct list *var
 
         if (v->initializer.args_count)
         {
-            bool is_default_values_initializer;
+            bool is_default_values_initializer, static_initialization;
 
             is_default_values_initializer = (ctx->cur_buffer != ctx->globals_buffer)
                     || (var->storage_modifiers & HLSL_STORAGE_UNIFORM)
@@ -2681,6 +2688,10 @@ static struct hlsl_block *initialize_vars(struct hlsl_ctx *ctx, struct list *var
                 is_default_values_initializer = false;
             if (hlsl_type_is_shader(type))
                 is_default_values_initializer = false;
+
+            static_initialization = var->storage_modifiers & HLSL_STORAGE_STATIC
+                    || (var->data_type->modifiers & HLSL_MODIFIER_CONST
+                    && is_static_expression(v->initializer.instrs));
 
             if (is_default_values_initializer)
             {
@@ -2710,7 +2721,7 @@ static struct hlsl_block *initialize_vars(struct hlsl_ctx *ctx, struct list *var
             {
                 hlsl_dump_var_default_values(var);
             }
-            else if (var->storage_modifiers & HLSL_STORAGE_STATIC)
+            else if (static_initialization)
             {
                 hlsl_block_add_block(&ctx->static_initializers, v->initializer.instrs);
             }

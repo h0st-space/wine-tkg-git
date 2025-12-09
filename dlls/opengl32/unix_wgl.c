@@ -53,6 +53,7 @@ static BOOL is_wow64(void)
     return !!NtCurrentTeb()->WowTebOffset;
 }
 
+const struct opengl_funcs *opengl_funcs;
 static UINT64 call_gl_debug_message_callback;
 pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -143,9 +144,9 @@ struct context
     GLubyte *extensions;           /* extension string */
     char *wow64_version;           /* wow64 GL version override */
     struct buffers *buffers;       /* wow64 buffers map */
-    GLenum gl_error;               /* wrapped GL error */
     const char **extension_array;  /* array of supported extensions */
     size_t extension_count;        /* size of supported extensions */
+    BOOL use_pinned_memory;        /* use GL_AMD_pinned_memory to emulate persistent maps */
 
     /* semi-stub state tracker for wglCopyContext */
     GLbitfield used;                            /* context state used bits */
@@ -171,6 +172,7 @@ struct buffer
     size_t copy_length;
     void *vm_ptr;
     SIZE_T vm_size;
+    BOOL pinned;
 
     /* members of Vulkan-backed buffer storages */
     struct vk_device *vk_device;
@@ -398,7 +400,7 @@ static int compare_buffer_name( const void *key, const struct rb_entry *entry )
     return memcmp( key, &buffer->name, sizeof(buffer->name) );
 }
 
-static void free_buffer( const struct opengl_funcs *funcs, struct buffer *buffer )
+void free_buffer( const struct opengl_funcs *funcs, struct buffer *buffer )
 {
     if (buffer->vk_memory)
     {
@@ -814,6 +816,15 @@ static BOOL is_any_extension_supported( struct context *ctx, const char *extensi
     return FALSE;
 }
 
+static void set_gl_error( TEB *teb, GLenum error )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    struct context *ctx;
+
+    if (!(ctx = get_current_context( teb, NULL, NULL )) || ctx->base.error) return;
+    if (!(ctx->base.error = funcs->p_glGetError())) ctx->base.error = error;
+}
+
 static BOOL get_default_fbo_integer( struct context *ctx, struct opengl_drawable *draw, struct opengl_drawable *read,
                                      GLenum pname, GLint *data )
 {
@@ -853,7 +864,11 @@ static BOOL get_integer( TEB *teb, GLenum pname, GLint *data )
     struct opengl_drawable *draw, *read;
     struct context *ctx;
 
-    if (!(ctx = get_current_context( teb, &draw, &read ))) return FALSE;
+    if (!(ctx = get_current_context( teb, &draw, &read )))
+    {
+        set_gl_error( teb, GL_INVALID_OPERATION );
+        return FALSE;
+    }
 
     switch (pname)
     {
@@ -1290,7 +1305,8 @@ static void make_context_current( TEB *teb, const struct opengl_funcs *funcs, HD
     ctx->extension_array = extensions;
     ctx->extension_count = count;
 
-    if (is_win64 && ctx->buffers && !initialize_vk_device( teb, ctx ))
+    if (is_win64 && ctx->buffers && !initialize_vk_device( teb, ctx )
+        && !(ctx->use_pinned_memory = is_extension_supported( ctx, "GL_AMD_pinned_memory" )))
     {
         if (ctx->major_version > 4 || (ctx->major_version == 4 && ctx->minor_version > 3))
         {
@@ -2014,7 +2030,7 @@ void wrap_glGetIntegerv( TEB *teb, GLenum pname, GLint *data )
 {
     const struct opengl_funcs *funcs = teb->glTable;
     if (get_integer( teb, pname, data )) return;
-    funcs->p_glGetIntegerv( pname, data );
+    else funcs->p_glGetIntegerv( pname, data );
 }
 
 void wrap_glGetBooleanv( TEB *teb, GLenum pname, GLboolean *data )
@@ -2030,7 +2046,7 @@ void wrap_glGetDoublev( TEB *teb, GLenum pname, GLdouble *data )
     const struct opengl_funcs *funcs = teb->glTable;
     GLint value;
     if (get_integer( teb, pname, &value )) *data = value;
-    funcs->p_glGetDoublev( pname, data );
+    else funcs->p_glGetDoublev( pname, data );
 }
 
 void wrap_glGetFloatv( TEB *teb, GLenum pname, GLfloat *data )
@@ -2061,6 +2077,19 @@ void wrap_glGetFramebufferParameterivEXT( TEB *teb, GLuint fbo, GLenum pname, GL
     funcs->p_glGetFramebufferParameterivEXT( fbo, pname, params );
 }
 
+GLenum wrap_glGetError( TEB *teb )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    GLenum error, wrapped;
+    struct wgl_context *ctx;
+
+    if (!(ctx = &get_current_context( teb, NULL, NULL )->base)) return GL_INVALID_OPERATION;
+    error = funcs->p_glGetError();
+    wrapped = ctx->error;
+    ctx->error = GL_NO_ERROR;
+    return wrapped ? wrapped : error;
+}
+
 NTSTATUS process_attach( void *args )
 {
     struct process_attach_params *params = args;
@@ -2072,6 +2101,8 @@ NTSTATUS process_attach( void *args )
         NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
         zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
     }
+
+    opengl_funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION );
     return STATUS_SUCCESS;
 }
 
@@ -2156,28 +2187,6 @@ NTSTATUS return_wow64_string( const void *str, PTR32 *wow64_str )
     if (*wow64_str) return STATUS_SUCCESS;
     *wow64_str = strlen( str ) + 1;
     return STATUS_BUFFER_TOO_SMALL;
-}
-
-GLenum wow64_glGetError( TEB *teb )
-{
-    const struct opengl_funcs *funcs = teb->glTable;
-    GLenum gl_err, prev_err;
-    struct context *ctx;
-
-    if (!(ctx = get_current_context( teb, NULL, NULL ))) return GL_INVALID_OPERATION;
-    gl_err = funcs->p_glGetError();
-    prev_err = ctx->gl_error;
-    ctx->gl_error = GL_NO_ERROR;
-    return prev_err ? prev_err : gl_err;
-}
-
-static void set_gl_error( TEB *teb, GLenum gl_error )
-{
-    const struct opengl_funcs *funcs = teb->glTable;
-    struct context *ctx;
-
-    if (!(ctx = get_current_context( teb, NULL, NULL )) || ctx->gl_error) return;
-    if (!(ctx->gl_error = funcs->p_glGetError())) ctx->gl_error = gl_error;
 }
 
 static struct wgl_handle *get_sync_ptr( TEB *teb, GLsync sync )
@@ -2323,26 +2332,32 @@ static struct buffer *get_named_buffer( TEB *teb, GLuint name )
     return NULL;
 }
 
-void invalidate_buffer_name( TEB *teb, GLuint name )
+struct buffer *invalidate_buffer_name( TEB *teb, GLuint name )
 {
     struct buffer *buffer = get_named_buffer( teb, name );
-    struct context *ctx;
-
-    if (!buffer || !(ctx = get_current_context( teb, NULL, NULL ))) return;
-    rb_remove( &ctx->buffers->map, &buffer->entry );
-    free_buffer( teb->glTable, buffer );
+    if (buffer)
+    {
+        struct context *ctx = get_current_context( teb, NULL, NULL );
+        rb_remove( &ctx->buffers->map, &buffer->entry );
+    }
+    return buffer;
 }
 
-void invalidate_buffer_target( TEB *teb, GLenum target )
+struct buffer *invalidate_buffer_target( TEB *teb, GLenum target )
 {
     GLuint name = get_target_name( teb, target );
-    if (name) invalidate_buffer_name( teb, name );
+    return name ? invalidate_buffer_name( teb, name ) : NULL;
 }
 
 static struct buffer *get_target_buffer( TEB *teb, GLenum target )
 {
     GLuint name = get_target_name( teb, target );
     return name ? get_named_buffer( teb, name ) : NULL;
+}
+
+static BOOL use_driver_buffer_map( struct buffer *buffer )
+{
+    return !buffer || (!buffer->vk_memory && !buffer->pinned);
 }
 
 static BOOL buffer_vm_alloc( TEB *teb, struct buffer *buffer, SIZE_T size )
@@ -2422,7 +2437,30 @@ static struct buffer *create_buffer_storage( TEB *teb, GLenum target, GLuint nam
     VkResult vr;
 
     if (!(flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) return NULL;
-    if (!(vk_device = ctx->buffers->vk_device) || !vk_device->vk_device) return NULL;
+    if ((!(vk_device = ctx->buffers->vk_device) || !vk_device->vk_device) && !ctx->use_pinned_memory) return NULL;
+
+    if (!(buffer = calloc( 1, sizeof(*buffer) ))) return NULL;
+    buffer->name = buffer_name;
+    buffer->flags = flags;
+    buffer->size = size;
+    buffer->vk_device = vk_device;
+
+    if (ctx->use_pinned_memory)
+    {
+        if (!buffer_vm_alloc( teb, buffer, size )) return NULL;
+        if (data) memcpy( buffer->vm_ptr, data, size );
+        buffer->pinned = TRUE;
+
+        /* FIXME: we may interfere with GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD if the
+         * application uses it as well. Unlike other targets, there’s no way to query
+         * the currently bound target, so we’d need to track it ourselves if we want
+         * to support it. */
+        funcs->p_glBindBuffer( GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, buffer_name );
+        funcs->p_glBufferData( GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, size, buffer->vm_ptr, GL_DYNAMIC_COPY );
+        rb_put( &ctx->buffers->map, &buffer->name, &buffer->entry );
+        TRACE( "created buffer %p with pinned memory %p\n", buffer, buffer->vm_ptr );
+        return buffer;
+    }
 
     if (flags & GL_CLIENT_STORAGE_BIT) desired_type &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     memory_type = find_vk_memory_type( vk_device, desired_type, type_mask );
@@ -2431,15 +2469,10 @@ static struct buffer *create_buffer_storage( TEB *teb, GLenum target, GLuint nam
     if (memory_type == -1)
     {
         WARN( "Could not find memory type\n" );
+        free_buffer( funcs, buffer );
         return NULL;
     }
     alloc_info.memoryTypeIndex = memory_type;
-
-    if (!(buffer = calloc( 1, sizeof(*buffer) ))) return NULL;
-    buffer->name = buffer_name;
-    buffer->flags = flags;
-    buffer->size = size;
-    buffer->vk_device = vk_device;
 
     vr = vk_device->p_vkAllocateMemory( vk_device->vk_device, &alloc_info, NULL, &buffer->vk_memory );
     if (vr)
@@ -2537,6 +2570,13 @@ static void *wow64_map_buffer( TEB *teb, struct buffer *buffer, GLenum target, G
         return buffer->map_ptr;
     }
 
+    if (buffer && buffer->pinned)
+    {
+        buffer->map_ptr = (char *)buffer->vm_ptr + offset;
+        TRACE( "returning pinned ptr %p\n", buffer->map_ptr );
+        return buffer->map_ptr;
+    }
+
     if (!ptr) return NULL;
 
     if (!buffer)
@@ -2605,12 +2645,16 @@ static GLbitfield map_range_flags_from_map_flags( GLenum flags )
 void wow64_glDeleteBuffers( TEB *teb, GLsizei n, const GLuint *buffers )
 {
     const struct opengl_funcs *funcs = teb->glTable;
+    struct buffer *buffer;
     GLsizei i;
 
     pthread_mutex_lock( &wgl_lock );
 
     funcs->p_glDeleteBuffers( n, buffers );
-    for (i = 0; i < n; i++) invalidate_buffer_name( teb, buffers[i] );
+    for (i = 0; i < n; i++)
+    {
+        if ((buffer = invalidate_buffer_name( teb, buffers[i] ))) free_buffer( funcs, buffer );
+    }
 
     pthread_mutex_unlock( &wgl_lock );
 }
@@ -2710,7 +2754,7 @@ static void *wow64_gl_map_buffer( TEB *teb, GLenum target, GLenum access, PFN_gl
 
     pthread_mutex_lock( &wgl_lock );
     buffer = get_target_buffer( teb, target );
-    if (!buffer || !buffer->vk_memory) ptr = gl_map_buffer64( target, access );
+    if (use_driver_buffer_map( buffer )) ptr = gl_map_buffer64( target, access );
     ptr = wow64_map_buffer( teb, buffer, target, 0, 0, 0, range_access, ptr );
     pthread_mutex_unlock( &wgl_lock );
     return ptr;
@@ -2736,7 +2780,7 @@ void *wow64_glMapBufferRange( TEB *teb, GLenum target, GLintptr offset, GLsizeip
 
     pthread_mutex_lock( &wgl_lock );
     buffer = get_target_buffer( teb, target );
-    if (!buffer || !buffer->vk_memory) ptr = funcs->p_glMapBufferRange( target, offset, length, access );
+    if (use_driver_buffer_map( buffer )) ptr = funcs->p_glMapBufferRange( target, offset, length, access );
     ptr = wow64_map_buffer( teb, buffer, target, 0, offset, length, access, ptr );
     pthread_mutex_unlock( &wgl_lock );
     return ptr;
@@ -2750,7 +2794,7 @@ static void *wow64_gl_map_named_buffer( TEB *teb, GLuint name, GLenum access, PF
 
     pthread_mutex_lock( &wgl_lock );
     buffer = get_named_buffer( teb, name );
-    if (!buffer || !buffer->vk_memory) ptr = gl_map_named_buffer64( name, access );
+    if (use_driver_buffer_map( buffer )) ptr = gl_map_named_buffer64( name, access );
     ptr = wow64_map_buffer( teb, buffer, 0, name, 0, 0, range_access, ptr );
     pthread_mutex_unlock( &wgl_lock );
     return ptr;
@@ -2776,7 +2820,7 @@ static void *wow64_gl_map_named_buffer_range( TEB *teb, GLuint name, GLintptr of
 
     pthread_mutex_lock( &wgl_lock );
     buffer = get_named_buffer( teb, name );
-    if (!buffer || !buffer->vk_memory) ptr = gl_map_named_buffer_range64( name, offset, length, access );
+    if (use_driver_buffer_map( buffer )) ptr = gl_map_named_buffer_range64( name, offset, length, access );
     ptr = wow64_map_buffer( teb, buffer, 0, name, offset, length, access, ptr );
     pthread_mutex_unlock( &wgl_lock );
     return ptr;
@@ -2806,14 +2850,12 @@ static BOOL wow64_unmap_buffer( TEB *teb, struct buffer *buffer )
         unmap_vk_buffer( buffer );
     }
 
-    if (buffer->host_ptr != buffer->map_ptr)
+    if (buffer->copy_length)
     {
-        if (buffer->copy_length)
-        {
-            TRACE( "Copying %#zx from wow64 buffer %p to buffer %p\n", buffer->copy_length,
-                   buffer->map_ptr, buffer->host_ptr );
-            memcpy( buffer->host_ptr, buffer->map_ptr, buffer->copy_length );
-        }
+        TRACE( "Copying %#zx from wow64 buffer %p to buffer %p\n", buffer->copy_length,
+               buffer->map_ptr, buffer->host_ptr );
+        memcpy( buffer->host_ptr, buffer->map_ptr, buffer->copy_length );
+        buffer->copy_length = 0;
     }
 
     buffer->host_ptr = buffer->map_ptr = NULL;
@@ -2827,7 +2869,7 @@ static GLboolean wow64_unmap_target_buffer( TEB *teb, GLenum target, PFN_glUnmap
 
     pthread_mutex_lock( &wgl_lock );
     if ((buffer = get_target_buffer( teb, target ))) ret = wow64_unmap_buffer( teb, buffer );
-    if (!buffer || !buffer->vk_memory) ret = gl_unmap( target );
+    if (use_driver_buffer_map( buffer )) ret = gl_unmap( target );
     pthread_mutex_unlock( &wgl_lock );
     return ret;
 }
@@ -2851,7 +2893,7 @@ static GLboolean wow64_gl_unmap_named_buffer( TEB *teb, GLuint name, PFN_glUnmap
 
     pthread_mutex_lock( &wgl_lock );
     if ((buffer = get_named_buffer( teb, name ))) ret = wow64_unmap_buffer( teb, buffer );
-    if (!buffer || !buffer->vk_memory) ret = gl_unmap( name );
+    if (use_driver_buffer_map( buffer )) ret = gl_unmap( name );
     pthread_mutex_unlock( &wgl_lock );
     return ret;
 }
@@ -2875,7 +2917,7 @@ void wow64_glFlushMappedBufferRange( TEB *teb, GLenum target, GLintptr offset, G
 
     pthread_mutex_lock( &wgl_lock );
     if ((buffer = get_target_buffer( teb, target ))) flush_buffer( teb, buffer, offset, length );
-    if (!buffer || !buffer->vk_memory) funcs->p_glFlushMappedBufferRange( target, offset, length );
+    if (use_driver_buffer_map( buffer )) funcs->p_glFlushMappedBufferRange( target, offset, length );
     pthread_mutex_unlock( &wgl_lock );
 }
 
@@ -2886,7 +2928,7 @@ void wow64_glFlushMappedNamedBufferRange( TEB *teb, GLuint name, GLintptr offset
 
     pthread_mutex_lock( &wgl_lock );
     if ((buffer = get_named_buffer( teb, name ))) flush_buffer( teb, buffer, offset, length );
-    if (!buffer || !buffer->vk_memory) funcs->p_glFlushMappedNamedBufferRange( name, offset, length );
+    if (use_driver_buffer_map( buffer )) funcs->p_glFlushMappedNamedBufferRange( name, offset, length );
     pthread_mutex_unlock( &wgl_lock );
 }
 
@@ -2897,7 +2939,7 @@ void wow64_glFlushMappedNamedBufferRangeEXT( TEB *teb, GLuint name, GLintptr off
 
     pthread_mutex_lock( &wgl_lock );
     if ((buffer = get_named_buffer( teb, name ))) flush_buffer( teb, buffer, offset, length );
-    if (!buffer || !buffer->vk_memory) funcs->p_glFlushMappedNamedBufferRangeEXT( name, offset, length );
+    if (use_driver_buffer_map( buffer )) funcs->p_glFlushMappedNamedBufferRangeEXT( name, offset, length );
     pthread_mutex_unlock( &wgl_lock );
 }
 
