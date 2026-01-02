@@ -162,8 +162,7 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
         flags = GL_FLUSH_INTERVAL;
     }
 
-    if (flags || InterlockedCompareExchange( &drawable->client->offscreen, 0, 0 ))
-        drawable->funcs->flush( drawable, flags );
+    if (flags) drawable->funcs->flush( drawable, flags );
 }
 
 static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
@@ -1104,14 +1103,6 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
     TRACE( "  - device_uuid: %s\n", debugstr_guid(&egl->device_uuid) );
     TRACE( "  - driver_uuid: %s\n", debugstr_guid(&egl->driver_uuid) );
 
-    if (!egl->accelerated && sizeof(void *) == 4)
-    {
-        WARN( "Skipping bogus 32bit llvmpipe device initialization\n" );
-        egl->device_name = "llvmpipe";
-        egl->vendor_name = "Mesa";
-        return;
-    }
-
     funcs->p_eglBindAPI( EGL_OPENGL_API );
     funcs->p_eglGetConfigs( egl->display, &config, 1, &count );
     if (!count) config = EGL_NO_CONFIG_KHR;
@@ -1530,14 +1521,12 @@ static BOOL win32u_wglSetPixelFormat( HDC hdc, int new_format, const PIXELFORMAT
 
         if ((old_format = get_window_pixel_format( hwnd ))) return old_format == new_format;
 
-        if ((drawable = get_window_unused_drawable( hwnd, new_format )))
-        {
-            set_window_opengl_drawable( hwnd, drawable, TRUE );
-            set_window_opengl_drawable( hwnd, drawable, FALSE );
-            opengl_drawable_release( drawable );
-        }
+        if (!(drawable = get_window_unused_drawable( hwnd, new_format ))) return FALSE;
+        set_window_opengl_drawable( hwnd, drawable, TRUE );
+        set_window_opengl_drawable( hwnd, drawable, FALSE );
+        opengl_drawable_release( drawable );
 
-        return set_window_pixel_format( hwnd, new_format );
+        return set_window_pixel_format( hwnd, new_format, FALSE );
     }
 
     TRACE( "%p/%p format %d\n", hdc, hwnd, new_format );
@@ -1599,6 +1588,8 @@ static BOOL win32u_wglSetPixelFormatWINE( HDC hdc, int format )
         set_window_opengl_drawable( hwnd, drawable, TRUE );
         set_dc_opengl_drawable( hdc, drawable );
         opengl_drawable_release( drawable );
+
+        set_window_pixel_format( hwnd, format, TRUE );
     }
 
     return TRUE;
@@ -1711,12 +1702,13 @@ static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, H
 
         opengl_drawable_set_context( new_read, context );
         if (new_read != new_draw) opengl_drawable_set_context( new_draw, context );
+
+        opengl_drawable_flush( new_read, new_read->interval, 0 );
+        opengl_drawable_flush( new_draw, new_draw->interval, GL_FLUSH_PRESENT );
     }
 
     if (ret)
     {
-        opengl_drawable_flush( new_read, new_read->interval, 0 );
-        opengl_drawable_flush( new_draw, new_draw->interval, 0 );
         /* update the current window drawable to the last used draw surface */
         if (new_draw->client) set_window_opengl_drawable( new_draw->client->hwnd, new_draw, TRUE );
         context_exchange_drawables( context, &new_draw, &new_read );
@@ -2286,9 +2278,11 @@ static BOOL win32u_wgl_context_flush( struct wgl_context *context, void (*flush)
     TRACE( "context %p, hwnd %p, interval %d, flush %p\n", context, draw->client->hwnd, interval, flush );
 
     context_sync_drawables( context, 0, 0 );
+    if (!(draw = context->draw)) return FALSE; /* should never happen */
 
     if (flush) flush();
     if (flush == funcs->p_glFinish) flags |= GL_FLUSH_FINISHED;
+    if (flush && !force_swap) flags |= GL_FLUSH_PRESENT;
     opengl_drawable_flush( draw, interval, flags );
     if (force_swap) opengl_drawable_swap( draw );
 
@@ -2535,6 +2529,11 @@ static void display_funcs_init(void)
     display_funcs.p_wgl_context_reset = win32u_wgl_context_reset;
     display_funcs.p_wgl_context_flush = win32u_wgl_context_flush;
 
+    register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_pixel_format" );
+    display_funcs.p_wglChoosePixelFormatARB      = (void *)1; /* never called */
+    display_funcs.p_wglGetPixelFormatAttribfvARB = (void *)1; /* never called */
+    display_funcs.p_wglGetPixelFormatAttribivARB = (void *)1; /* never called */
+
     if (display_egl.has_EGL_EXT_pixel_format_float)
     {
         register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_pixel_format_float" );
@@ -2552,11 +2551,6 @@ static void display_funcs_init(void)
      */
     register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_WINE_pixel_format_passthrough" );
     display_funcs.p_wglSetPixelFormatWINE = win32u_wglSetPixelFormatWINE;
-
-    register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_pixel_format" );
-    display_funcs.p_wglChoosePixelFormatARB      = (void *)1; /* never called */
-    display_funcs.p_wglGetPixelFormatAttribfvARB = (void *)1; /* never called */
-    display_funcs.p_wglGetPixelFormatAttribivARB = (void *)1; /* never called */
 
     register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_create_context" );
     register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_create_context_no_error" );

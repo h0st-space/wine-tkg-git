@@ -649,6 +649,7 @@ enum wine_internal_message
     WM_WINE_WINDOW_STATE_CHANGED,
     WM_WINE_UPDATEWINDOWSTATE,
     WM_WINE_TRACKMOUSEEVENT,
+    WM_WINE_SETPIXELFORMAT,
     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
     WM_WINE_SETCURSOR,
@@ -1404,7 +1405,9 @@ enum
     NtUserCallHwndParam_GetWindowLongW,
     NtUserCallHwndParam_GetWindowLongPtrA,
     NtUserCallHwndParam_GetWindowLongPtrW,
-    NtUserCallHwndParam_GetWindowRects,
+    NtUserCallHwndParam_GetWindowRect,
+    NtUserCallHwndParam_GetClientRect,
+    NtUserCallHwndParam_GetPresentRect,
     NtUserCallHwndParam_GetWindowRelative,
     NtUserCallHwndParam_GetWindowThread,
     NtUserCallHwndParam_GetWindowWord,
@@ -1424,7 +1427,6 @@ enum
 struct get_window_rects_params
 {
     RECT *rect;
-    BOOL client;
     UINT dpi;
 };
 
@@ -1465,8 +1467,14 @@ static inline WORD NtUserGetClassWord( HWND hwnd, INT offset )
 
 static inline BOOL NtUserGetClientRect( HWND hwnd, RECT *rect, UINT dpi )
 {
-    struct get_window_rects_params params = {.rect = rect, .client = TRUE, .dpi = dpi};
-    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_GetWindowRects );
+    struct get_window_rects_params params = {.rect = rect, .dpi = dpi};
+    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_GetClientRect );
+}
+
+static inline BOOL NtUserGetPresentRect( HWND hwnd, RECT *rect, UINT dpi )
+{
+    struct get_window_rects_params params = {.rect = rect, .dpi = dpi};
+    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_GetPresentRect );
 }
 
 struct get_scroll_info_params
@@ -1508,8 +1516,8 @@ static inline LONG NtUserGetWindowLongW( HWND hwnd, INT offset )
 
 static inline BOOL NtUserGetWindowRect( HWND hwnd, RECT *rect, UINT dpi )
 {
-    struct get_window_rects_params params = {.rect = rect, .client = FALSE, .dpi = dpi};
-    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_GetWindowRects );
+    struct get_window_rects_params params = {.rect = rect, .dpi = dpi};
+    return NtUserCallHwndParam( hwnd, (UINT_PTR)&params, NtUserCallHwndParam_GetWindowRect );
 }
 
 static inline HWND NtUserGetWindowRelative( HWND hwnd, UINT rel )

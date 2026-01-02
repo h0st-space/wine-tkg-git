@@ -667,10 +667,6 @@ static void test_query_process( BOOL extended )
 
             if (extended)
             {
-                todo_wine ok( !!ti->StackBase, "Got NULL StackBase.\n" );
-                todo_wine ok( !!ti->StackLimit, "Got NULL StackLimit.\n" );
-                ok( !!ti->Win32StartAddress, "Got NULL Win32StartAddress.\n" );
-
                 cid.UniqueProcess = 0;
                 cid.UniqueThread = ti->ThreadInfo.ClientId.UniqueThread;
 
@@ -781,6 +777,8 @@ static void test_query_procperf(void)
     ok (sppi->KernelTime.QuadPart != 0xdeaddead, "KernelTime unchanged\n");
     ok (sppi->UserTime.QuadPart != 0xdeaddead, "UserTime unchanged\n");
     ok (sppi->IdleTime.QuadPart != 0xdeaddead, "IdleTime unchanged\n");
+    ok (sppi->KernelTime.QuadPart > sppi->IdleTime.QuadPart,
+        "Expected %I64u > %I64u\n", sppi->KernelTime.QuadPart, sppi->IdleTime.QuadPart);
 
     /* Try it for all processors */
     sppi->KernelTime.QuadPart = 0xdeaddead;
@@ -792,6 +790,8 @@ static void test_query_procperf(void)
     ok (sppi->KernelTime.QuadPart != 0xdeaddead, "KernelTime unchanged\n");
     ok (sppi->UserTime.QuadPart != 0xdeaddead, "UserTime unchanged\n");
     ok (sppi->IdleTime.QuadPart != 0xdeaddead, "IdleTime unchanged\n");
+    ok (sppi->KernelTime.QuadPart > sppi->IdleTime.QuadPart,
+        "Expected %I64u > %I64u\n", sppi->KernelTime.QuadPart, sppi->IdleTime.QuadPart);
 
     /* A too large given buffer size */
     sppi = HeapReAlloc(GetProcessHeap(), 0, sppi , NeededLength + 2);
@@ -841,7 +841,7 @@ static void test_query_module(void)
         RTL_PROCESS_MODULE_INFORMATION *module = &info->Modules[i];
 
         ok(module->LoadOrderIndex == i, "%lu: got index %u\n", i, module->LoadOrderIndex);
-        ok(module->ImageBaseAddress || is_wow64, "%lu: got NULL address for %s\n", i, module->Name);
+        /* module->ImageBaseAddress is not set on wow64 or arm64 */
         ok(module->ImageSize, "%lu: got 0 size\n", i);
         ok(module->LoadCount, "%lu: got 0 load count\n", i);
     }
@@ -867,7 +867,7 @@ static void test_query_module(void)
         const RTL_PROCESS_MODULE_INFORMATION *module = &infoex->BaseInfo;
 
         ok(module->LoadOrderIndex == i, "%lu: got index %u\n", i, module->LoadOrderIndex);
-        ok(module->ImageBaseAddress || is_wow64, "%lu: got NULL address for %s\n", i, module->Name);
+        /* module->ImageBaseAddress is not set on wow64 or arm64 */
         ok(module->ImageSize, "%lu: got 0 size\n", i);
         ok(module->LoadCount, "%lu: got 0 load count\n", i);
 

@@ -1095,7 +1095,7 @@ static void window_set_net_wm_icon( struct x11drv_win_data *data, const void *ic
     data->net_wm_icon_serial = NextRequest( data->display );
     TRACE( "window %p/%lx, requesting _NET_WM_ICON %p/%u serial %lu\n", data->hwnd, data->whole_window,
            icon_data, icon_size, data->net_wm_icon_serial );
-    if (!icon_data) XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_ICON), XA_CARDINAL,
+    if (icon_data) XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_ICON), XA_CARDINAL,
                                     32, PropModeReplace, icon_data, icon_size );
     else XDeleteProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_ICON) );
 }
@@ -2018,13 +2018,14 @@ void net_active_window_init( struct x11drv_thread_data *data )
     data->current_state.net_active_window = window;
 }
 
-static BOOL window_set_pending_activate( HWND hwnd )
+static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn )
 {
     struct x11drv_win_data *data;
     BOOL pending;
 
     if (!(data = get_win_data( hwnd ))) return FALSE;
     if ((pending = !!data->wm_state_serial)) data->pending_state.activate = TRUE;
+    *withdrawn = data->pending_state.wm_state == WithdrawnState;
     release_win_data( data );
 
     return pending;
@@ -2033,13 +2034,14 @@ static BOOL window_set_pending_activate( HWND hwnd )
 void set_net_active_window( HWND hwnd, HWND previous )
 {
     struct x11drv_thread_data *data = x11drv_thread_data();
+    BOOL withdrawn = FALSE;
     Window window;
     XEvent xev;
 
     if (!is_net_supported( x11drv_atom(_NET_ACTIVE_WINDOW) )) return;
     if (!(window = X11DRV_get_whole_window( hwnd ))) return;
     if (data->pending_state.net_active_window == window) return;
-    if (window_set_pending_activate( hwnd )) return;
+    if (window_set_pending_activate( hwnd, &withdrawn )) return;
 
     xev.xclient.type = ClientMessage;
     xev.xclient.window = window;
@@ -2056,6 +2058,15 @@ void set_net_active_window( HWND hwnd, HWND previous )
 
     data->pending_state.net_active_window = window;
     data->net_active_window_serial = NextRequest( data->display );
+
+    if (withdrawn)
+    {
+        /* workaround requesting activation of withdrawn windows which breaks some WM, assume the window will soon be mapped */
+        WARN( "skipping _NET_ACTIVE_WINDOW for withdrawn window %p/%lx serial %lu\n", hwnd, window, data->net_active_window_serial );
+        XNoOp( data->display );
+        return;
+    }
+
     TRACE( "requesting _NET_ACTIVE_WINDOW %p/%lx serial %lu\n", hwnd, window, data->net_active_window_serial );
     XSendEvent( data->display, DefaultRootWindow( data->display ), False,
                 SubstructureRedirectMask | SubstructureNotifyMask, &xev );
@@ -2230,6 +2241,7 @@ Window get_dummy_parent(void)
     if (!dummy_parent)
     {
         XSetWindowAttributes attrib;
+        unsigned long opacity = 0;
 
         attrib.override_redirect = True;
         attrib.border_pixel = 0;
@@ -2243,6 +2255,8 @@ Window get_dummy_parent(void)
                                           CWColormap | CWBorderPixel | CWOverrideRedirect, &attrib );
             XShapeCombineRectangles( gdi_display, dummy_parent, ShapeBounding, 0, 0, &empty_rect, 1,
                                      ShapeSet, YXBanded );
+            XShapeCombineRectangles( gdi_display, dummy_parent, ShapeInput, 0, 0, &empty_rect, 1,
+                                     ShapeSet, YXBanded );
         }
 #else
         dummy_parent = XCreateWindow( gdi_display, root_window, -1, -1, 1, 1, 0, default_visual.depth,
@@ -2250,6 +2264,8 @@ Window get_dummy_parent(void)
                                       CWColormap | CWBorderPixel | CWOverrideRedirect, &attrib );
         WARN("Xshape support is not compiled in. Applications under XWayland may have poor performance.\n");
 #endif
+        XChangeProperty( gdi_display, dummy_parent, x11drv_atom(_NET_WM_WINDOW_OPACITY),
+                         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&opacity, 1 );
         XMapWindow( gdi_display, dummy_parent );
     }
     return dummy_parent;
@@ -2338,17 +2354,12 @@ void destroy_client_window( HWND hwnd, Window client_window )
  */
 Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *visual, Colormap colormap )
 {
-    struct x11drv_win_data *data = get_win_data( hwnd );
+    struct x11drv_win_data *data = get_win_data( hwnd ), dummy = {0};
     XSetWindowAttributes attr;
     Window ret;
     int x, y, cx, cy;
 
-    if (!data)
-    {
-        /* explicitly create data for HWND_MESSAGE and foreign windows since they can be used for OpenGL */
-        if (!(data = alloc_win_data( thread_init_display(), hwnd ))) return 0;
-        data->rects.window = data->rects.visible = data->rects.client = client_rect;
-    }
+    if (!data) data = &dummy; /* use a dummy window data for HWND_MESSAGE and foreign windows, to create an offscreen client window */
 
     detach_client_window( data, data->client_window );
 
@@ -2379,7 +2390,8 @@ Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *vis
         }
         TRACE( "%p xwin %lx/%lx\n", data->hwnd, data->whole_window, data->client_window );
     }
-    release_win_data( data );
+
+    if (data != &dummy) release_win_data( data );
     return ret;
 }
 
@@ -3261,6 +3273,14 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     TRACE( "win %p/%lx new_rects %s style %08x flags %08x\n", hwnd, data->whole_window,
            debugstr_window_rects(new_rects), new_style, swp_flags );
+
+    /* visible windows are only hidden after SWP_HIDEWINDOW is used */
+    if (data->pending_state.wm_state != WithdrawnState && !(new_style & WS_VISIBLE) &&
+        !(swp_flags & SWP_HIDEWINDOW))
+    {
+        WARN( "win %p/%lx not yet hidden, delaying unmapping\n", hwnd, data->whole_window );
+        new_style |= WS_VISIBLE;
+    }
 
     /* layered windows are mapped only once their attributes are set */
     if (data->pending_state.wm_state == WithdrawnState && (new_style & WS_VISIBLE) &&
