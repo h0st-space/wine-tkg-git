@@ -7023,7 +7023,9 @@ typedef enum _FIRMWARE_TYPE
 /* Intrinsic functions */
 
 #define BitScanForward _BitScanForward
+#define BitScanForward64 _BitScanForward64
 #define BitScanReverse _BitScanReverse
+#define BitScanReverse64 _BitScanReverse64
 #define InterlockedAdd _InlineInterlockedAdd
 #define InterlockedAnd _InterlockedAnd
 #define InterlockedAnd64 _InterlockedAnd64
@@ -7048,24 +7050,6 @@ typedef enum _FIRMWARE_TYPE
 
 #ifdef _MSC_VER
 
-#pragma intrinsic(_BitScanForward)
-#pragma intrinsic(_BitScanReverse)
-#pragma intrinsic(_InterlockedAnd)
-#pragma intrinsic(_InterlockedCompareExchange)
-#pragma intrinsic(_InterlockedCompareExchange64)
-#pragma intrinsic(_InterlockedCompareExchangePointer)
-#pragma intrinsic(_InterlockedExchange)
-#pragma intrinsic(_InterlockedExchangeAdd)
-#pragma intrinsic(_InterlockedExchangeAdd16)
-#pragma intrinsic(_InterlockedExchangePointer)
-#pragma intrinsic(_InterlockedIncrement)
-#pragma intrinsic(_InterlockedIncrement16)
-#pragma intrinsic(_InterlockedDecrement)
-#pragma intrinsic(_InterlockedDecrement16)
-#pragma intrinsic(_InterlockedOr)
-#pragma intrinsic(_InterlockedXor)
-#pragma intrinsic(__fastfail)
-
 BOOLEAN   _BitScanForward(unsigned long*,unsigned long);
 BOOLEAN   _BitScanReverse(unsigned long*,unsigned long);
 long      _InterlockedAnd(long volatile *,long);
@@ -7084,9 +7068,37 @@ long      _InterlockedOr(long volatile *,long);
 long      _InterlockedXor(long volatile *,long);
 DECLSPEC_NORETURN void __fastfail(unsigned int);
 
+#pragma intrinsic(_BitScanForward)
+#pragma intrinsic(_BitScanReverse)
+#pragma intrinsic(_InterlockedAnd)
+#pragma intrinsic(_InterlockedCompareExchange)
+#pragma intrinsic(_InterlockedCompareExchange64)
+#pragma intrinsic(_InterlockedCompareExchangePointer)
+#pragma intrinsic(_InterlockedExchange)
+#pragma intrinsic(_InterlockedExchangeAdd)
+#pragma intrinsic(_InterlockedExchangeAdd16)
+#pragma intrinsic(_InterlockedExchangePointer)
+#pragma intrinsic(_InterlockedIncrement)
+#pragma intrinsic(_InterlockedIncrement16)
+#pragma intrinsic(_InterlockedDecrement)
+#pragma intrinsic(_InterlockedDecrement16)
+#pragma intrinsic(_InterlockedOr)
+#pragma intrinsic(_InterlockedXor)
+#pragma intrinsic(__fastfail)
+
+#if defined(_WIN64) || __has_builtin(_BitScanForward64)
+BOOLEAN _BitScanForward64(unsigned long*,unsigned __int64);
+#pragma intrinsic(_BitScanForward64)
+#endif
+
+#if defined(_WIN64) || __has_builtin(_BitScanReverse64)
+BOOLEAN _BitScanReverse64(unsigned long*,unsigned __int64);
+#pragma intrinsic(_BitScanReverse64)
+#endif
+
 #if !defined(__i386__) || __has_builtin(_InterlockedAnd64)
-#pragma intrinsic(_InterlockedAnd64)
 __int64   _InterlockedAnd64(__int64 volatile *, __int64);
+#pragma intrinsic(_InterlockedAnd64)
 #else
 static FORCEINLINE __int64 InterlockedAnd64( __int64 volatile *dest, __int64 val )
 {
@@ -7097,8 +7109,8 @@ static FORCEINLINE __int64 InterlockedAnd64( __int64 volatile *dest, __int64 val
 #endif
 
 #if !defined(__i386__) || __has_builtin(_InterlockedExchangeAdd64)
-#pragma intrinsic(_InterlockedExchangeAdd64)
 __int64   _InterlockedExchangeAdd64(__int64 volatile *, __int64);
+#pragma intrinsic(_InterlockedExchangeAdd64)
 #else
 static FORCEINLINE __int64 InterlockedExchangeAdd64( __int64 volatile *dest, __int64 val )
 {
@@ -7109,8 +7121,8 @@ static FORCEINLINE __int64 InterlockedExchangeAdd64( __int64 volatile *dest, __i
 #endif
 
 #if !defined(__i386__) || __has_builtin(_InterlockedDecrement64)
-#pragma intrinsic(_InterlockedDecrement64)
 __int64   _InterlockedDecrement64(__int64 volatile *);
+#pragma intrinsic(_InterlockedDecrement64)
 #else
 static FORCEINLINE __int64 InterlockedDecrement64( __int64 volatile *dest )
 {
@@ -7119,8 +7131,8 @@ static FORCEINLINE __int64 InterlockedDecrement64( __int64 volatile *dest )
 #endif
 
 #if !defined(__i386__) || __has_builtin(_InterlockedIncrement64)
-#pragma intrinsic(_InterlockedIncrement64)
 __int64   _InterlockedIncrement64(__int64 volatile *);
+#pragma intrinsic(_InterlockedIncrement64)
 #else
 static FORCEINLINE __int64 InterlockedIncrement64( __int64 volatile *dest )
 {
@@ -7129,8 +7141,8 @@ static FORCEINLINE __int64 InterlockedIncrement64( __int64 volatile *dest )
 #endif
 
 #if !defined(__i386__) || __has_builtin(_InterlockedOr64)
-#pragma intrinsic(_InterlockedOr64)
 __int64   _InterlockedOr64(__int64 volatile *, __int64);
+#pragma intrinsic(_InterlockedOr64)
 #else
 static FORCEINLINE __int64 InterlockedOr64( __int64 volatile *dest, __int64 val )
 {
@@ -7141,8 +7153,8 @@ static FORCEINLINE __int64 InterlockedOr64( __int64 volatile *dest, __int64 val 
 #endif
 
 #if !defined(__i386__) || __has_builtin(_InterlockedXor64)
-#pragma intrinsic(_InterlockedXor64)
 __int64   _InterlockedXor64(__int64 volatile *, __int64);
+#pragma intrinsic(_InterlockedXor64)
 #else
 static FORCEINLINE __int64 InterlockedXor64( __int64 volatile *dest, __int64 val )
 {
@@ -7179,8 +7191,8 @@ static FORCEINLINE void MemoryBarrier(void)
 
 #elif defined(__x86_64__)
 
-#pragma intrinsic(__faststorefence)
 void __faststorefence(void);
+#pragma intrinsic(__faststorefence)
 
 static FORCEINLINE void MemoryBarrier(void)
 {
@@ -7217,8 +7229,8 @@ static FORCEINLINE void MemoryBarrier(void)
 #endif  /* _MSC_VER >= 1700 */
 
 #if defined(__i386__) || defined(__x86_64__)
-#pragma intrinsic(_ReadWriteBarrier)
 void _ReadWriteBarrier(void);
+#pragma intrinsic(_ReadWriteBarrier)
 #endif  /* defined(__i386__) || defined(__x86_64__) */
 
 static void __wine_memory_barrier_acq_rel(void)
@@ -7315,9 +7327,21 @@ static FORCEINLINE BOOLEAN WINAPI BitScanForward(DWORD *index, DWORD mask)
     return mask != 0;
 }
 
+static FORCEINLINE BOOLEAN WINAPI BitScanForward64(DWORD *index, DWORD64 mask)
+{
+    *index = __builtin_ctzll( mask );
+    return mask != 0;
+}
+
 static FORCEINLINE BOOLEAN WINAPI BitScanReverse(DWORD *index, DWORD mask)
 {
     *index = 31 - __builtin_clz( mask );
+    return mask != 0;
+}
+
+static FORCEINLINE BOOLEAN WINAPI BitScanReverse64(DWORD *index, DWORD64 mask)
+{
+    *index = 63 - __builtin_clzll( mask );
     return mask != 0;
 }
 
@@ -7553,8 +7577,8 @@ static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
 
 #if defined(_MSC_VER) && (!defined(__clang__) || !defined(__aarch64__) || __has_builtin(_InterlockedCompareExchange128))
 
-#pragma intrinsic(_InterlockedCompareExchange128)
 unsigned char _InterlockedCompareExchange128(volatile __int64 *, __int64, __int64, __int64 *);
+#pragma intrinsic(_InterlockedCompareExchange128)
 
 #else
 
@@ -7685,6 +7709,9 @@ static FORCEINLINE DWORD64 UnsignedMultiply128( DWORD64 a, DWORD64 b, DWORD64 *h
     return (DWORD64)v;
 }
 #endif
+
+#define Int32x32To64(a,b)  ((INT64)(INT)(a) * (INT64)(INT)(b))
+#define UInt32x32To64(a,b) ((UINT64)(UINT)(a) * (UINT64)(UINT)(b))
 
 #ifdef __cplusplus
 }

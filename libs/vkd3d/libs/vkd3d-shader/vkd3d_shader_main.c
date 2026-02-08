@@ -474,6 +474,11 @@ void vkd3d_shader_error(struct vkd3d_shader_message_context *context, const stru
     va_end(args);
 }
 
+void vkd3d_bytecode_buffer_cleanup(struct vkd3d_bytecode_buffer *buffer)
+{
+    vkd3d_free(buffer->data);
+}
+
 size_t bytecode_align(struct vkd3d_bytecode_buffer *buffer)
 {
     size_t aligned_size = align(buffer->size, 4);
@@ -550,6 +555,16 @@ void set_u32(struct vkd3d_bytecode_buffer *buffer, size_t offset, uint32_t value
 void set_string(struct vkd3d_bytecode_buffer *buffer, size_t offset, const char *string, size_t length)
 {
     bytecode_set_bytes(buffer, offset, string, length);
+}
+
+void vkd3d_shader_code_from_bytecode_buffer(struct vkd3d_shader_code *code, struct vkd3d_bytecode_buffer *buffer)
+{
+    code->size = buffer->size;
+    code->code = buffer->data;
+
+    buffer->data = NULL;
+    buffer->size = 0;
+    buffer->capacity = 0;
 }
 
 struct shader_dump_data
@@ -976,6 +991,7 @@ struct vkd3d_shader_scan_context
         {
             VKD3D_SHADER_BLOCK_IF,
             VKD3D_SHADER_BLOCK_LOOP,
+            VKD3D_SHADER_BLOCK_REP,
             VKD3D_SHADER_BLOCK_SWITCH,
         } type;
         bool inside_block;
@@ -1087,6 +1103,7 @@ static struct vkd3d_shader_cf_info *vkd3d_shader_scan_find_innermost_breakable_c
     {
         cf_info = &context->cf_info[--count];
         if (cf_info->type == VKD3D_SHADER_BLOCK_LOOP
+                || cf_info->type == VKD3D_SHADER_BLOCK_REP
                 || cf_info->type == VKD3D_SHADER_BLOCK_SWITCH)
             return cf_info;
     }
@@ -1432,6 +1449,20 @@ static int vkd3d_shader_scan_instruction(struct vkd3d_shader_scan_context *conte
             {
                 vkd3d_shader_scan_error(context, VKD3D_SHADER_ERROR_TPF_MISMATCHED_CF,
                         "Encountered ‘endloop’ instruction without corresponding ‘loop’ block.");
+                return VKD3D_ERROR_INVALID_SHADER;
+            }
+            vkd3d_shader_scan_pop_cf_info(context);
+            break;
+        case VSIR_OP_REP:
+            cf_info = vkd3d_shader_scan_push_cf_info(context);
+            cf_info->type = VKD3D_SHADER_BLOCK_REP;
+            cf_info->inside_block = true;
+            break;
+        case VSIR_OP_ENDREP:
+            if (!(cf_info = vkd3d_shader_scan_get_current_cf_info(context)) || cf_info->type != VKD3D_SHADER_BLOCK_REP)
+            {
+                vkd3d_shader_scan_error(context, VKD3D_SHADER_ERROR_TPF_MISMATCHED_CF,
+                        "Encountered ‘endrep’ instruction without corresponding ‘rep’ block.");
                 return VKD3D_ERROR_INVALID_SHADER;
             }
             vkd3d_shader_scan_pop_cf_info(context);
@@ -2029,7 +2060,7 @@ void shader_signature_cleanup(struct shader_signature *signature)
 {
     for (unsigned int i = 0; i < signature->element_count; ++i)
     {
-        vkd3d_free((void *)signature->elements[i].semantic_name);
+        vsir_signature_element_cleanup(&signature->elements[i]);
     }
     vkd3d_free(signature->elements);
     signature->elements = NULL;

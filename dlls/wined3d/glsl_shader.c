@@ -5685,30 +5685,26 @@ static void shader_glsl_atomic(const struct wined3d_shader_instruction *ins)
                 op = "imageAtomicAdd";
             break;
         case WINED3DSIH_ATOMIC_IMAX:
-        case WINED3DSIH_ATOMIC_UMAX:
         case WINED3DSIH_IMM_ATOMIC_IMAX:
-        case WINED3DSIH_IMM_ATOMIC_UMAX:
             if (is_tgsm)
                 op = "atomicMax";
             else
                 op = "imageAtomicMax";
-            if (data_type != WINED3D_DATA_INT && data_type != WINED3D_DATA_UINT)
+            if (data_type != WINED3D_DATA_INT)
             {
-                FIXME("Unhandled opcode %#x for integers.\n", ins->handler_idx);
+                FIXME("Unhandled opcode %#x for unsigned integers.\n", ins->handler_idx);
                 return;
             }
             break;
         case WINED3DSIH_ATOMIC_IMIN:
-        case WINED3DSIH_ATOMIC_UMIN:
         case WINED3DSIH_IMM_ATOMIC_IMIN:
-        case WINED3DSIH_IMM_ATOMIC_UMIN:
             if (is_tgsm)
                 op = "atomicMin";
             else
                 op = "imageAtomicMin";
-            if (data_type != WINED3D_DATA_INT && data_type != WINED3D_DATA_UINT)
+            if (data_type != WINED3D_DATA_INT)
             {
-                FIXME("Unhandled opcode %#x for integers.\n", ins->handler_idx);
+                FIXME("Unhandled opcode %#x for unsigned integers.\n", ins->handler_idx);
                 return;
             }
             break;
@@ -5718,6 +5714,30 @@ static void shader_glsl_atomic(const struct wined3d_shader_instruction *ins)
                 op = "atomicOr";
             else
                 op = "imageAtomicOr";
+            break;
+        case WINED3DSIH_ATOMIC_UMAX:
+        case WINED3DSIH_IMM_ATOMIC_UMAX:
+            if (is_tgsm)
+                op = "atomicMax";
+            else
+                op = "imageAtomicMax";
+            if (data_type != WINED3D_DATA_UINT)
+            {
+                FIXME("Unhandled opcode %#x for signed integers.\n", ins->handler_idx);
+                return;
+            }
+            break;
+        case WINED3DSIH_ATOMIC_UMIN:
+        case WINED3DSIH_IMM_ATOMIC_UMIN:
+            if (is_tgsm)
+                op = "atomicMin";
+            else
+                op = "imageAtomicMin";
+            if (data_type != WINED3D_DATA_UINT)
+            {
+                FIXME("Unhandled opcode %#x for signed integers.\n", ins->handler_idx);
+                return;
+            }
             break;
         case WINED3DSIH_ATOMIC_XOR:
         case WINED3DSIH_IMM_ATOMIC_XOR:
@@ -9425,7 +9445,7 @@ static GLuint shader_glsl_generate_ffp_vertex_shader(struct shader_glsl_priv *pr
 
             case WINED3DTSS_TCI_SPHEREMAP:
                 shader_addline(buffer, "r = reflect(ffp_normalize(ec_pos.xyz), normal);\n");
-                shader_addline(buffer, "m = 2.0 * length(vec3(r.x, r.y, r.z + 1.0));\n");
+                shader_addline(buffer, "m = 2.0 * length(vec3(r.x, r.y, r.z - 1.0));\n");
                 shader_addline(texcoord, "vec4(r.x / m + 0.5, r.y / m + 0.5, 0.0, 1.0)");
                 break;
 

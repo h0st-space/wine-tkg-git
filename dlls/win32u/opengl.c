@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -39,7 +40,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(wgl);
 
-struct wgl_pbuffer
+struct pbuffer
 {
     struct opengl_drawable *drawable;
 
@@ -51,6 +52,12 @@ struct wgl_pbuffer
     GLint mipmap_level;
     GLenum cube_face;
 };
+
+static struct pbuffer *pbuffer_from_client_pbuffer( HPBUFFERARB client_pbuffer )
+{
+    struct opengl_client_pbuffer *client = opengl_client_pbuffer_from_client( client_pbuffer );
+    return (struct pbuffer *)(UINT_PTR)client->unix_handle;
+}
 
 static const struct opengl_driver_funcs nulldrv_funcs, *driver_funcs = &nulldrv_funcs;
 static struct list devices_egl = LIST_INIT( devices_egl );
@@ -145,7 +152,7 @@ void opengl_drawable_release( struct opengl_drawable *drawable )
     }
 }
 
-static void opengl_drawable_set_context( struct opengl_drawable *drawable, struct wgl_context *context )
+static void opengl_drawable_set_context( struct opengl_drawable *drawable, struct opengl_context *context )
 {
     if (!drawable->funcs->set_context) return;
     drawable->funcs->set_context( drawable, context ? context->driver_private : NULL );
@@ -168,6 +175,7 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
 static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
 {
     if (!is_client_surface_window( drawable->client, 0 )) return FALSE;
+    client_surface_update( drawable->client );
     return drawable->funcs->swap( drawable );
 }
 
@@ -1073,6 +1081,7 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
 {
     static const UINT versions[] = {46, 45, 44, 43, 42, 41, 40, 33, 32, 31, 30, 21, 20, 15, 14, 13, 12, 11, 10, 0};
     EGLContext core_context = EGL_NO_CONTEXT, compat_context = EGL_NO_CONTEXT, context = EGL_NO_CONTEXT;
+    BOOL has_device_persistent_id;
     int i, count, values[3] = {0};
     const char *extensions, *str;
     EGLConfig config;
@@ -1095,13 +1104,11 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
     TRACE( "  - device_id: %#x\n", egl->device_id );
     TRACE( "  - vendor_id: %#x\n", egl->vendor_id );
 
-    if (has_extension( extensions, "EGL_EXT_device_persistent_id" ))
+    if ((has_device_persistent_id = has_extension( extensions, "EGL_EXT_device_persistent_id" )))
     {
         funcs->p_eglQueryDeviceBinaryEXT( egl->device, EGL_DEVICE_UUID_EXT, sizeof(egl->device_uuid), &egl->device_uuid, &count );
         funcs->p_eglQueryDeviceBinaryEXT( egl->device, EGL_DRIVER_UUID_EXT, sizeof(egl->driver_uuid), &egl->driver_uuid, &count );
     }
-    TRACE( "  - device_uuid: %s\n", debugstr_guid(&egl->device_uuid) );
-    TRACE( "  - driver_uuid: %s\n", debugstr_guid(&egl->driver_uuid) );
 
     funcs->p_eglBindAPI( EGL_OPENGL_API );
     funcs->p_eglGetConfigs( egl->display, &config, 1, &count );
@@ -1165,8 +1172,17 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
         }
         TRACE( "  - video_memory: %u MiB\n", egl->video_memory );
 
+        if (!has_device_persistent_id && (has_extension( extensions, "GL_EXT_memory_object" ) || has_extension( extensions, "GL_EXT_semaphore" )))
+        {
+            funcs->p_glGetUnsignedBytevEXT( GL_DRIVER_UUID_EXT, (GLubyte *)&egl->driver_uuid );
+            funcs->p_glGetUnsignedBytei_vEXT( GL_DEVICE_UUID_EXT, 0, (GLubyte *)&egl->device_uuid );
+        }
+
         funcs->p_eglMakeCurrent( egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );
     }
+
+    TRACE( "  - device_uuid: %s\n", debugstr_guid(&egl->device_uuid) );
+    TRACE( "  - driver_uuid: %s\n", debugstr_guid(&egl->driver_uuid) );
 
     if (compat_context) funcs->p_eglDestroyContext( egl->display, compat_context );
     if (core_context) funcs->p_eglDestroyContext( egl->display, core_context );
@@ -1336,7 +1352,7 @@ static int win32u_wglGetPixelFormat( HDC hdc )
     return format > 0 ? format : 0;
 }
 
-static void set_window_opengl_drawable( HWND hwnd, struct opengl_drawable *new_drawable, BOOL current )
+void set_window_opengl_drawable( HWND hwnd, struct opengl_drawable *new_drawable, BOOL current )
 {
     struct opengl_drawable *old_drawable = NULL;
     WND *win;
@@ -1428,9 +1444,130 @@ static struct opengl_drawable *get_dc_opengl_drawable( HDC hdc )
     return drawable;
 }
 
+static void pbuffer_destroy( struct pbuffer *pbuffer )
+{
+    opengl_drawable_release( pbuffer->drawable );
+    NtGdiDeleteObjectApp( pbuffer->hdc );
+    free( pbuffer );
+}
+
+static struct pbuffer *pbuffer_create( HDC hdc, int format, int width, int height, const int *attribs )
+{
+    struct pbuffer *pbuffer;
+    UINT size, max_level = 0;
+    BOOL largest = FALSE;
+
+    if (!(pbuffer = calloc( 1, sizeof(*pbuffer) )) || !(pbuffer->hdc = NtGdiOpenDCW( NULL, NULL, NULL, 0, TRUE, NULL, NULL, NULL )))
+    {
+        RtlSetLastWin32Error( ERROR_NO_SYSTEM_RESOURCES );
+        free( pbuffer );
+        return 0;
+    }
+    NtGdiSetPixelFormat( pbuffer->hdc, format );
+    pbuffer->width = width;
+    pbuffer->height = height;
+    pbuffer->mipmap_level = -1;
+
+    for (; attribs && attribs[0]; attribs += 2)
+    {
+        switch (attribs[0])
+        {
+        case WGL_PBUFFER_LARGEST_ARB:
+            TRACE( "WGL_PBUFFER_LARGEST_ARB %#x\n", attribs[1] );
+            largest = !!attribs[1];
+            break;
+
+        case WGL_TEXTURE_FORMAT_ARB:
+            TRACE( "WGL_TEXTURE_FORMAT_ARB %#x\n", attribs[1] );
+            switch (attribs[1])
+            {
+            case WGL_NO_TEXTURE_ARB:
+                pbuffer->texture_format = 0;
+                break;
+            case WGL_TEXTURE_RGB_ARB:
+                pbuffer->texture_format = GL_RGB;
+                break;
+            case WGL_TEXTURE_RGBA_ARB:
+                pbuffer->texture_format = GL_RGBA;
+                break;
+            /* WGL_FLOAT_COMPONENTS_NV */
+            case WGL_TEXTURE_FLOAT_R_NV:
+                pbuffer->texture_format = GL_FLOAT_R_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RG_NV:
+                pbuffer->texture_format = GL_FLOAT_RG_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RGB_NV:
+                pbuffer->texture_format = GL_FLOAT_RGB_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RGBA_NV:
+                pbuffer->texture_format = GL_FLOAT_RGBA_NV;
+                break;
+            default:
+                FIXME( "Unknown texture format: %x\n", attribs[1] );
+                goto failed;
+            }
+            break;
+
+        case WGL_TEXTURE_TARGET_ARB:
+            TRACE( "WGL_TEXTURE_TARGET_ARB %#x\n", attribs[1] );
+            switch (attribs[1])
+            {
+            case WGL_NO_TEXTURE_ARB:
+                pbuffer->texture_target = 0;
+                break;
+            case WGL_TEXTURE_CUBE_MAP_ARB:
+                if (width != height) goto failed;
+                pbuffer->texture_target = GL_TEXTURE_CUBE_MAP;
+                break;
+            case WGL_TEXTURE_1D_ARB:
+                if (height != 1) goto failed;
+                pbuffer->texture_target = GL_TEXTURE_1D;
+                break;
+            case WGL_TEXTURE_2D_ARB:
+                pbuffer->texture_target = GL_TEXTURE_2D;
+                break;
+            case WGL_TEXTURE_RECTANGLE_NV:
+                pbuffer->texture_target = GL_TEXTURE_RECTANGLE_NV;
+                break;
+            default:
+                FIXME( "Unknown texture target: %x\n", attribs[1] );
+                goto failed;
+            }
+            break;
+
+        case WGL_MIPMAP_TEXTURE_ARB:
+            TRACE( "WGL_MIPMAP_TEXTURE_ARB %#x\n", attribs[1] );
+            if (attribs[1])
+            {
+                pbuffer->mipmap_level = max_level = 0;
+                for (size = min( width, height ) / 2; size; size /= 2) max_level++;
+            }
+            break;
+
+        default:
+            WARN( "attribute %#x %#x not handled\n", attribs[0], attribs[1] );
+            break;
+        }
+    }
+
+    if (driver_funcs->p_pbuffer_create( pbuffer->hdc, format, largest, pbuffer->texture_format,
+                                        pbuffer->texture_target, max_level, &pbuffer->width,
+                                        &pbuffer->height, &pbuffer->drawable ))
+    {
+        set_dc_opengl_drawable( pbuffer->hdc, pbuffer->drawable );
+        return pbuffer;
+    }
+
+failed:
+    RtlSetLastWin32Error( ERROR_INVALID_DATA );
+    NtGdiDeleteObjectApp( pbuffer->hdc );
+    free( pbuffer );
+    return NULL;
+}
+
 static BOOL create_memory_pbuffer( HDC hdc )
 {
-    const struct opengl_funcs *funcs = &display_funcs;
     dib_info dib = {.rect = {0, 0, 1, 1}};
     BOOL ret = TRUE;
     BITMAPOBJ *bmp;
@@ -1451,22 +1588,22 @@ static BOOL create_memory_pbuffer( HDC hdc )
     if (ret)
     {
         int width = dib.rect.right - dib.rect.left, height = dib.rect.bottom - dib.rect.top;
-        struct wgl_pbuffer *pbuffer;
+        struct pbuffer *pbuffer;
 
-        if (!(pbuffer = funcs->p_wglCreatePbufferARB( hdc, format, width, height, NULL )))
+        if (!(pbuffer = pbuffer_create( hdc, format, width, height, NULL )))
             WARN( "Failed to create pbuffer for memory DC %p\n", hdc );
         else
         {
             TRACE( "Created pbuffer %p for memory DC %p\n", pbuffer, hdc );
             set_dc_opengl_drawable( hdc, pbuffer->drawable );
-            funcs->p_wglDestroyPbufferARB( pbuffer );
+            pbuffer_destroy( pbuffer );
         }
     }
 
     return ret;
 }
 
-static BOOL flush_memory_dc( struct wgl_context *context, HDC hdc, BOOL write, void (*flush)(void) )
+static BOOL flush_memory_dc( struct opengl_context *context, HDC hdc, BOOL write, void (*flush)(void) )
 {
     const struct opengl_funcs *funcs = &display_funcs;
     BOOL ret = TRUE;
@@ -1612,7 +1749,7 @@ static void win32u_get_pixel_formats( struct wgl_pixel_format *formats, UINT max
     *num_onscreen_formats = onscreen_count;
 }
 
-static void context_exchange_drawables( struct wgl_context *context, struct opengl_drawable **draw, struct opengl_drawable **read )
+static void context_exchange_drawables( struct opengl_context *context, struct opengl_drawable **draw, struct opengl_drawable **read )
 {
     struct opengl_drawable *old_draw = context->draw, *old_read = context->read;
     context->draw = *draw;
@@ -1621,7 +1758,7 @@ static void context_exchange_drawables( struct wgl_context *context, struct open
     *read = old_read;
 }
 
-static BOOL context_unset_current( struct wgl_context *context )
+static BOOL context_unset_current( struct opengl_context *context )
 {
     struct opengl_drawable *old_draw = context->draw, *old_read = context->read;
 
@@ -1660,10 +1797,10 @@ static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct
     return get_window_unused_drawable( hwnd, format );
 }
 
-static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, HDC read_hdc )
+static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc, HDC read_hdc )
 {
     struct opengl_drawable *new_draw, *new_read, *old_draw = NULL, *old_read = NULL;
-    struct wgl_context *previous = NtCurrentTeb()->glContext;
+    struct opengl_context *previous = NtCurrentTeb()->glContext;
     BOOL ret = FALSE;
 
     if (!(new_draw = get_updated_drawable( draw_hdc, context->format, context->draw ))) return FALSE;
@@ -1726,7 +1863,7 @@ static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, H
     return ret;
 }
 
-static void push_internal_context( struct wgl_context *context, HDC hdc, int format )
+static void push_internal_context( struct opengl_context *context, HDC hdc, int format )
 {
     TRACE( "context %p, hdc %p\n", context, hdc );
 
@@ -1739,15 +1876,16 @@ static void push_internal_context( struct wgl_context *context, HDC hdc, int for
     driver_funcs->p_make_current( context->draw, context->read, context->internal_context );
 }
 
-static void pop_internal_context( struct wgl_context *context )
+static void pop_internal_context( struct opengl_context *context )
 {
     TRACE( "context %p\n", context );
     driver_funcs->p_make_current( context->draw, context->read, context->driver_private );
 }
 
-static BOOL win32u_wglMakeContextCurrentARB( HDC draw_hdc, HDC read_hdc, struct wgl_context *context )
+static BOOL win32u_wglMakeContextCurrentARB( HDC draw_hdc, HDC read_hdc, HGLRC client_context )
 {
-    struct wgl_context *prev_context = NtCurrentTeb()->glContext;
+    struct opengl_context *context = opengl_context_from_handle( client_context );
+    struct opengl_context *prev_context = NtCurrentTeb()->glContext;
     BOOL created;
     int format;
 
@@ -1793,18 +1931,24 @@ static BOOL win32u_wglMakeContextCurrentARB( HDC draw_hdc, HDC read_hdc, struct 
     return TRUE;
 }
 
-static BOOL win32u_wglMakeCurrent( HDC hdc, struct wgl_context *context )
+static BOOL win32u_wglMakeCurrent( HDC hdc, HGLRC client_context )
 {
-    return win32u_wglMakeContextCurrentARB( hdc, hdc, context );
+    return win32u_wglMakeContextCurrentARB( hdc, hdc, client_context );
 }
 
-static struct wgl_pbuffer *win32u_wglCreatePbufferARB( HDC hdc, int format, int width, int height,
-                                                       const int *attribs )
+static void opengl_client_pbuffer_init( HPBUFFERARB client_pbuffer, struct pbuffer *pbuffer, const struct opengl_funcs *funcs )
+{
+    struct opengl_client_pbuffer *client = opengl_client_pbuffer_from_client( client_pbuffer );
+    client->unix_handle = (UINT_PTR)pbuffer;
+    client->unix_funcs = (UINT_PTR)funcs;
+}
+
+static HPBUFFERARB win32u_wglCreatePbufferARB( HDC hdc, int format, int width, int height, const int *attribs,
+                                               HPBUFFERARB client_pbuffer )
 {
     const struct opengl_funcs *funcs = &display_funcs;
-    UINT total, onscreen, size, max_level = 0;
-    struct wgl_pbuffer *pbuffer;
-    BOOL largest = FALSE;
+    struct pbuffer *pbuffer;
+    UINT total, onscreen;
 
     TRACE( "(%p, %d, %d, %d, %p)\n", hdc, format, width, height, attribs );
 
@@ -1812,142 +1956,38 @@ static struct wgl_pbuffer *win32u_wglCreatePbufferARB( HDC hdc, int format, int 
     if (format <= 0 || format > total)
     {
         RtlSetLastWin32Error( ERROR_INVALID_PIXEL_FORMAT );
-        return NULL;
+        return 0;
     }
     if (width <= 0 || height <= 0)
     {
         RtlSetLastWin32Error( ERROR_INVALID_DATA );
-        return NULL;
+        return 0;
     }
 
-    if (!(pbuffer = calloc( 1, sizeof(*pbuffer) )) || !(pbuffer->hdc = NtGdiOpenDCW( NULL, NULL, NULL, 0, TRUE, NULL, NULL, NULL )))
-    {
-        RtlSetLastWin32Error( ERROR_NO_SYSTEM_RESOURCES );
-        free( pbuffer );
-        return NULL;
-    }
-    NtGdiSetPixelFormat( pbuffer->hdc, format );
-    pbuffer->width = width;
-    pbuffer->height = height;
-    pbuffer->mipmap_level = -1;
-
-    for (; attribs && attribs[0]; attribs += 2)
-    {
-        switch (attribs[0])
-        {
-        case WGL_PBUFFER_LARGEST_ARB:
-            TRACE( "WGL_PBUFFER_LARGEST_ARB %#x\n", attribs[1] );
-            largest = !!attribs[1];
-            break;
-
-        case WGL_TEXTURE_FORMAT_ARB:
-            TRACE( "WGL_TEXTURE_FORMAT_ARB %#x\n", attribs[1] );
-            switch (attribs[1])
-            {
-            case WGL_NO_TEXTURE_ARB:
-                pbuffer->texture_format = 0;
-                break;
-            case WGL_TEXTURE_RGB_ARB:
-                pbuffer->texture_format = GL_RGB;
-                break;
-            case WGL_TEXTURE_RGBA_ARB:
-                pbuffer->texture_format = GL_RGBA;
-                break;
-            /* WGL_FLOAT_COMPONENTS_NV */
-            case WGL_TEXTURE_FLOAT_R_NV:
-                pbuffer->texture_format = GL_FLOAT_R_NV;
-                break;
-            case WGL_TEXTURE_FLOAT_RG_NV:
-                pbuffer->texture_format = GL_FLOAT_RG_NV;
-                break;
-            case WGL_TEXTURE_FLOAT_RGB_NV:
-                pbuffer->texture_format = GL_FLOAT_RGB_NV;
-                break;
-            case WGL_TEXTURE_FLOAT_RGBA_NV:
-                pbuffer->texture_format = GL_FLOAT_RGBA_NV;
-                break;
-            default:
-                FIXME( "Unknown texture format: %x\n", attribs[1] );
-                goto failed;
-            }
-            break;
-
-        case WGL_TEXTURE_TARGET_ARB:
-            TRACE( "WGL_TEXTURE_TARGET_ARB %#x\n", attribs[1] );
-            switch (attribs[1])
-            {
-            case WGL_NO_TEXTURE_ARB:
-                pbuffer->texture_target = 0;
-                break;
-            case WGL_TEXTURE_CUBE_MAP_ARB:
-                if (width != height) goto failed;
-                pbuffer->texture_target = GL_TEXTURE_CUBE_MAP;
-                break;
-            case WGL_TEXTURE_1D_ARB:
-                if (height != 1) goto failed;
-                pbuffer->texture_target = GL_TEXTURE_1D;
-                break;
-            case WGL_TEXTURE_2D_ARB:
-                pbuffer->texture_target = GL_TEXTURE_2D;
-                break;
-            case WGL_TEXTURE_RECTANGLE_NV:
-                pbuffer->texture_target = GL_TEXTURE_RECTANGLE_NV;
-                break;
-            default:
-                FIXME( "Unknown texture target: %x\n", attribs[1] );
-                goto failed;
-            }
-            break;
-
-        case WGL_MIPMAP_TEXTURE_ARB:
-            TRACE( "WGL_MIPMAP_TEXTURE_ARB %#x\n", attribs[1] );
-            if (attribs[1])
-            {
-                pbuffer->mipmap_level = max_level = 0;
-                for (size = min( width, height ) / 2; size; size /= 2) max_level++;
-            }
-            break;
-
-        default:
-            WARN( "attribute %#x %#x not handled\n", attribs[0], attribs[1] );
-            break;
-        }
-    }
-
-    if (driver_funcs->p_pbuffer_create( pbuffer->hdc, format, largest, pbuffer->texture_format,
-                                        pbuffer->texture_target, max_level, &pbuffer->width,
-                                        &pbuffer->height, &pbuffer->drawable ))
-    {
-        set_dc_opengl_drawable( pbuffer->hdc, pbuffer->drawable );
-        return pbuffer;
-    }
-
-failed:
-    RtlSetLastWin32Error( ERROR_INVALID_DATA );
-    NtGdiDeleteObjectApp( pbuffer->hdc );
-    free( pbuffer );
-    return NULL;
+    if (!(pbuffer = pbuffer_create( hdc, format, width, height, attribs ))) return 0;
+    opengl_client_pbuffer_init( client_pbuffer, pbuffer, funcs );
+    return client_pbuffer;
 }
 
-static BOOL win32u_wglDestroyPbufferARB( struct wgl_pbuffer *pbuffer )
+static BOOL win32u_wglDestroyPbufferARB( HPBUFFERARB client_pbuffer )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
     TRACE( "pbuffer %p\n", pbuffer );
-
-    opengl_drawable_release( pbuffer->drawable );
-    NtGdiDeleteObjectApp( pbuffer->hdc );
-    free( pbuffer );
-
+    pbuffer_destroy( pbuffer );
     return GL_TRUE;
 }
 
-static HDC win32u_wglGetPbufferDCARB( struct wgl_pbuffer *pbuffer )
+static HDC win32u_wglGetPbufferDCARB( HPBUFFERARB client_pbuffer )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
     TRACE( "pbuffer %p\n", pbuffer );
     return pbuffer->hdc;
 }
 
-static int win32u_wglReleasePbufferDCARB( struct wgl_pbuffer *pbuffer, HDC hdc )
+static int win32u_wglReleasePbufferDCARB( HPBUFFERARB client_pbuffer, HDC hdc )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
+
     TRACE( "pbuffer %p, hdc %p\n", pbuffer, hdc );
 
     if (hdc != pbuffer->hdc)
@@ -1959,8 +1999,10 @@ static int win32u_wglReleasePbufferDCARB( struct wgl_pbuffer *pbuffer, HDC hdc )
     return TRUE;
 }
 
-static BOOL win32u_wglQueryPbufferARB( struct wgl_pbuffer *pbuffer, int attrib, int *value )
+static BOOL win32u_wglQueryPbufferARB( HPBUFFERARB client_pbuffer, int attrib, int *value )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
+
     TRACE( "pbuffer %p, attrib %#x, value %p\n", pbuffer, attrib, value );
 
     switch (attrib)
@@ -2053,9 +2095,10 @@ static GLenum binding_from_target( GLenum target )
     return 0;
 }
 
-static BOOL win32u_wglBindTexImageARB( struct wgl_pbuffer *pbuffer, int buffer )
+static BOOL win32u_wglBindTexImageARB( HPBUFFERARB client_pbuffer, int buffer )
 {
     const struct opengl_funcs *funcs = &display_funcs;
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
     int prev_texture = 0, format = win32u_wglGetPixelFormat( pbuffer->hdc );
     struct wgl_pixel_format desc;
     GLenum source;
@@ -2128,8 +2171,10 @@ static BOOL win32u_wglBindTexImageARB( struct wgl_pbuffer *pbuffer, int buffer )
     return GL_TRUE;
 }
 
-static BOOL win32u_wglReleaseTexImageARB( struct wgl_pbuffer *pbuffer, int buffer )
+static BOOL win32u_wglReleaseTexImageARB( HPBUFFERARB client_pbuffer, int buffer )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
+
     TRACE( "pbuffer %p, buffer %d\n", pbuffer, buffer );
 
     if (!pbuffer->texture_format)
@@ -2141,8 +2186,10 @@ static BOOL win32u_wglReleaseTexImageARB( struct wgl_pbuffer *pbuffer, int buffe
     return !!driver_funcs->p_pbuffer_bind( pbuffer->hdc, pbuffer->drawable, GL_NONE );
 }
 
-static BOOL win32u_wglSetPbufferAttribARB( struct wgl_pbuffer *pbuffer, const int *attribs )
+static BOOL win32u_wglSetPbufferAttribARB( HPBUFFERARB client_pbuffer, const int *attribs )
 {
+    struct pbuffer *pbuffer = pbuffer_from_client_pbuffer( client_pbuffer );
+
     TRACE( "pbuffer %p, attribs %p\n", pbuffer, attribs );
 
     if (!pbuffer->texture_format)
@@ -2212,25 +2259,12 @@ static int get_window_swap_interval( HWND hwnd )
     return interval;
 }
 
-static BOOL win32u_wgl_context_reset( struct wgl_context *context, HDC hdc, struct wgl_context *share, const int *attribs )
+static BOOL win32u_context_create( struct opengl_context *context, HDC hdc, struct opengl_context *share, const int *attribs )
 {
     void *share_private = share ? share->driver_private : NULL;
     int format;
 
     TRACE( "context %p, hdc %p, share %p, attribs %p\n", context, hdc, share, attribs );
-
-    if (context->internal_context)
-    {
-        driver_funcs->p_context_destroy( context->internal_context );
-        context->internal_context = NULL;
-    }
-    if (context->driver_private && !driver_funcs->p_context_destroy( context->driver_private ))
-    {
-        WARN( "Failed to destroy driver context %p\n", context->driver_private );
-        return FALSE;
-    }
-    context->driver_private = NULL;
-    if (!hdc) return TRUE;
 
     if ((format = get_dc_pixel_format( hdc )) <= 0 &&
         (format = get_window_pixel_format( NtUserWindowFromDC( hdc ) )) <= 0)
@@ -2246,14 +2280,43 @@ static BOOL win32u_wgl_context_reset( struct wgl_context *context, HDC hdc, stru
     }
     context->format = format;
 
-    TRACE( "reset context %p, format %u for driver context %p\n", context, format, context->driver_private );
+    TRACE( "created context %p, format %u for driver context %p\n", context, format, context->driver_private );
     return TRUE;
+}
+
+static BOOL win32u_context_destroy( struct opengl_context *context )
+{
+    TRACE( "context %p\n", context );
+
+    if (context->internal_context)
+    {
+        driver_funcs->p_context_destroy( context->internal_context );
+        context->internal_context = NULL;
+    }
+    if (context->driver_private && !driver_funcs->p_context_destroy( context->driver_private ))
+    {
+        WARN( "Failed to destroy driver context %p\n", context->driver_private );
+        return FALSE;
+    }
+    context->driver_private = NULL;
+
+    return TRUE;
+}
+
+static BOOL win32u_context_reset( struct opengl_context *context, struct opengl_context *share, const int *attribs )
+{
+    void *share_private = share ? share->driver_private : NULL;
+
+    TRACE( "context %p, share %p, attribs %p\n", context, share, attribs );
+
+    if (!win32u_context_destroy( context )) return FALSE;
+    return driver_funcs->p_context_create( context->format, share_private, attribs, &context->driver_private );
 }
 
 static BOOL flush_memory_pbuffer( void (*flush)(void) )
 {
     HDC draw_hdc = NtCurrentTeb()->glReserved1[0], read_hdc = NtCurrentTeb()->glReserved1[1];
-    struct wgl_context *context = NtCurrentTeb()->glContext;
+    struct opengl_context *context = NtCurrentTeb()->glContext;
     BOOL created;
 
     TRACE( "context %p, draw_hdc %p, read_hdc %p, flush %p\n", context, draw_hdc, read_hdc, flush );
@@ -2264,34 +2327,32 @@ static BOOL flush_memory_pbuffer( void (*flush)(void) )
     return flush_memory_dc( context, draw_hdc, FALSE, flush );
 }
 
-static BOOL win32u_wgl_context_flush( struct wgl_context *context, void (*flush)(void), BOOL force_swap )
+static BOOL win32u_context_flush( struct opengl_context *context, void (*flush)(void), UINT flags )
 {
     const struct opengl_funcs *funcs = &display_funcs;
     struct opengl_drawable *draw = context->draw;
-    UINT flags = 0;
     int interval;
 
     if (!draw->client) return flush_memory_pbuffer( flush );
     interval = get_window_swap_interval( draw->client->hwnd );
-    if (force_swap) interval = 0;
+    if (flags & GL_FLUSH_FORCE_SWAP) interval = 0;
 
-    TRACE( "context %p, hwnd %p, interval %d, flush %p\n", context, draw->client->hwnd, interval, flush );
+    TRACE( "context %p, hwnd %p, interval %d, flush %p, flags %#x\n", context, draw->client->hwnd, interval, flush, flags );
 
     context_sync_drawables( context, 0, 0 );
     if (!(draw = context->draw)) return FALSE; /* should never happen */
 
     if (flush) flush();
     if (flush == funcs->p_glFinish) flags |= GL_FLUSH_FINISHED;
-    if (flush && !force_swap) flags |= GL_FLUSH_PRESENT;
     opengl_drawable_flush( draw, interval, flags );
-    if (force_swap) opengl_drawable_swap( draw );
+    if (flags & GL_FLUSH_FORCE_SWAP) opengl_drawable_swap( draw );
 
     return TRUE;
 }
 
 static BOOL win32u_wglSwapBuffers( HDC hdc )
 {
-    struct wgl_context *context = NtCurrentTeb()->glContext;
+    struct opengl_context *context = NtCurrentTeb()->glContext;
     const struct opengl_funcs *funcs = &display_funcs;
     struct opengl_drawable *draw;
     int interval;
@@ -2364,12 +2425,13 @@ static int win32u_wglGetSwapIntervalEXT(void)
 
 static void set_gl_error( GLenum error )
 {
-    struct wgl_context *ctx = NtCurrentTeb()->glContext;
     const struct opengl_funcs *funcs = &display_funcs;
+    struct opengl_client_context *client;
+    struct opengl_context *ctx;
 
-    if (!ctx || ctx->error) return;
-    if ((ctx->error = funcs->p_glGetError())) return;
-    ctx->error = error;
+    if (!(ctx = NtCurrentTeb()->glContext)) return;
+    if (!(client = opengl_client_context_from_client( ctx->client_context ))) return;
+    if (!client->last_error && !(client->last_error = funcs->p_glGetError())) client->last_error = error;
 }
 
 static struct egl_platform *egl_platform_from_index( GLint index )
@@ -2381,6 +2443,27 @@ static struct egl_platform *egl_platform_from_index( GLint index )
 
     WARN( "Cannot find renderer at index %d\n", index );
     return NULL;
+}
+
+static BOOL win32u_query_renderer( UINT attribute, void *value )
+{
+    struct egl_platform *egl = &display_egl;
+    LUID luid;
+    UINT mask;
+
+    TRACE( "attribute %#x, value %p\n", attribute, value );
+
+    switch (attribute)
+    {
+    case GL_DEVICE_LUID_EXT:
+        return get_gpu_info_from_uuid( &egl->device_uuid, (LUID *)value, &mask, NULL );
+    case GL_DEVICE_NODE_MASK_EXT:
+        return get_gpu_info_from_uuid( &egl->device_uuid, &luid, value, NULL );
+    default:
+        FIXME( "Unsupported attribute %#x\n", attribute );
+        set_gl_error( GL_INVALID_ENUM );
+        return FALSE;
+    }
 }
 
 static BOOL query_renderer_integer( struct egl_platform *egl, GLenum attribute, GLuint *value )
@@ -2480,6 +2563,112 @@ static const char *win32u_wglQueryCurrentRendererStringWINE( GLenum attribute )
     return query_renderer_string( LIST_ENTRY( ptr, struct egl_platform, entry ), attribute );
 }
 
+static void import_memory( GLuint memory, GLuint64 size, GLenum type, void *handle )
+{
+    const struct opengl_funcs *funcs = &display_funcs;
+    D3DKMT_HANDLE local, mutex, sync;
+    GLenum err;
+    int fd;
+
+    switch (type)
+    {
+    case GL_HANDLE_TYPE_OPAQUE_WIN32_EXT:
+        local = d3dkmt_open_resource( 0, handle, &mutex, &sync );
+        break;
+    case GL_HANDLE_TYPE_OPAQUE_WIN32_KMT_EXT:
+        local = d3dkmt_open_resource( PtrToUlong( handle ), NULL, &mutex, &sync );
+        break;
+    default: return set_gl_error( GL_INVALID_ENUM );
+    }
+    if (mutex) d3dkmt_destroy_mutex( mutex );
+    if (sync) d3dkmt_destroy_sync( sync );
+    fd = d3dkmt_object_get_fd( local );
+    d3dkmt_destroy_resource( local );
+    if (fd < 0) return set_gl_error( GL_INVALID_VALUE );
+
+    set_gl_error( funcs->p_glGetError() ); /* save the error in the wrapper so we can check for success */
+    funcs->p_glImportMemoryFdEXT( memory, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd );
+    if (!(err = funcs->p_glGetError())) return;
+
+    close( fd );
+    set_gl_error( err );
+}
+
+static void win32u_glImportMemoryWin32HandleEXT( GLuint memory, GLuint64 size, GLenum type, void *handle )
+{
+    TRACE( "memory %u size %s type %#x handle %p\n", memory, wine_dbgstr_longlong( size ), type, handle );
+
+    if (handle) import_memory( memory, size, type, handle );
+    else set_gl_error( GL_INVALID_VALUE );
+}
+
+static void win32u_glImportMemoryWin32NameEXT( GLuint memory, GLuint64 size, GLenum type, const void *name )
+{
+    HANDLE handle;
+
+    TRACE( "memory %u size %s type %#x name %s\n", memory, wine_dbgstr_longlong( size ), type, debugstr_w( name ) );
+
+    if (type != GL_HANDLE_TYPE_OPAQUE_WIN32_EXT) set_gl_error( GL_INVALID_ENUM );
+    else if (!(handle = open_shared_resource_from_name( name ))) set_gl_error( GL_INVALID_VALUE );
+    else
+    {
+        import_memory( memory, size, type, handle );
+        NtClose( handle );
+    }
+}
+
+static void import_semaphore( GLuint semaphore, GLenum type, void *handle )
+{
+    const struct opengl_funcs *funcs = &display_funcs;
+    D3DKMT_HANDLE local;
+    GLenum err;
+    int fd;
+
+    switch (type)
+    {
+    case GL_HANDLE_TYPE_OPAQUE_WIN32_EXT:
+        local = d3dkmt_open_sync( 0, handle );
+        break;
+    case GL_HANDLE_TYPE_OPAQUE_WIN32_KMT_EXT:
+        local = d3dkmt_open_sync( PtrToUlong( handle ), NULL );
+        break;
+    default: return set_gl_error( GL_INVALID_ENUM );
+    }
+    fd = d3dkmt_object_get_fd( local );
+    d3dkmt_destroy_sync( local );
+    if (fd < 0) return set_gl_error( GL_INVALID_VALUE );
+
+    set_gl_error( funcs->p_glGetError() ); /* save the error in the wrapper so we can check for success */
+    funcs->p_glImportSemaphoreFdEXT( semaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd );
+    if (!(err = funcs->p_glGetError())) return;
+
+    close( fd );
+    set_gl_error( err );
+}
+
+void win32u_glImportSemaphoreWin32HandleEXT( GLuint semaphore, GLenum type, void *handle )
+{
+    TRACE( "semaphore %u type %#x handle %p\n", semaphore, type, handle );
+
+    if (handle) import_semaphore( semaphore, type, handle );
+    else set_gl_error( GL_INVALID_VALUE );
+}
+
+void win32u_glImportSemaphoreWin32NameEXT( GLuint semaphore, GLenum type, const void *name )
+{
+    HANDLE handle;
+
+    TRACE( "semaphore %u type %#x name %s\n", semaphore, type, debugstr_w( name ) );
+
+    if (type != GL_HANDLE_TYPE_OPAQUE_WIN32_EXT) set_gl_error( GL_INVALID_ENUM );
+    else if (!(handle = open_shared_semaphore_from_name( name ))) set_gl_error( GL_INVALID_VALUE );
+    else
+    {
+        import_semaphore( semaphore, type, handle );
+        NtClose( handle );
+    }
+}
+
 static void display_funcs_init(void)
 {
     struct egl_platform *egl;
@@ -2500,12 +2689,17 @@ static void display_funcs_init(void)
         WARN( "%s not found.\n", #func );
     ALL_GL_FUNCS
     USE_GL_FUNC(glBindFramebuffer)
+    USE_GL_FUNC(glBlitFramebuffer)
     USE_GL_FUNC(glCheckNamedFramebufferStatus)
     USE_GL_FUNC(glCreateFramebuffers)
     USE_GL_FUNC(glCreateRenderbuffers)
     USE_GL_FUNC(glDeleteFramebuffers)
     USE_GL_FUNC(glDeleteRenderbuffers)
     USE_GL_FUNC(glGetNamedFramebufferAttachmentParameteriv)
+    USE_GL_FUNC(glGetUnsignedBytei_vEXT)
+    USE_GL_FUNC(glGetUnsignedBytevEXT)
+    USE_GL_FUNC(glImportMemoryFdEXT)
+    USE_GL_FUNC(glImportSemaphoreFdEXT)
     USE_GL_FUNC(glNamedFramebufferDrawBuffer)
     USE_GL_FUNC(glNamedFramebufferReadBuffer)
     USE_GL_FUNC(glNamedFramebufferRenderbuffer)
@@ -2526,8 +2720,10 @@ static void display_funcs_init(void)
     display_funcs.p_wglMakeCurrent = win32u_wglMakeCurrent;
 
     display_funcs.p_wglSwapBuffers = win32u_wglSwapBuffers;
-    display_funcs.p_wgl_context_reset = win32u_wgl_context_reset;
-    display_funcs.p_wgl_context_flush = win32u_wgl_context_flush;
+    display_funcs.p_context_flush = win32u_context_flush;
+    display_funcs.p_context_create = win32u_context_create;
+    display_funcs.p_context_destroy = win32u_context_destroy;
+    display_funcs.p_context_reset = win32u_context_reset;
 
     register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_ARB_pixel_format" );
     display_funcs.p_wglChoosePixelFormatARB      = (void *)1; /* never called */
@@ -2578,9 +2774,21 @@ static void display_funcs_init(void)
     display_funcs.p_wglSwapIntervalEXT = win32u_wglSwapIntervalEXT;
     display_funcs.p_wglGetSwapIntervalEXT = win32u_wglGetSwapIntervalEXT;
 
+    if (display_funcs.p_glImportMemoryFdEXT)
+    {
+        display_funcs.p_glImportMemoryWin32HandleEXT = win32u_glImportMemoryWin32HandleEXT;
+        display_funcs.p_glImportMemoryWin32NameEXT = win32u_glImportMemoryWin32NameEXT;
+    }
+    if (display_funcs.p_glImportSemaphoreFdEXT)
+    {
+        display_funcs.p_glImportSemaphoreWin32HandleEXT = win32u_glImportSemaphoreWin32HandleEXT;
+        display_funcs.p_glImportSemaphoreWin32NameEXT = win32u_glImportSemaphoreWin32NameEXT;
+    }
+
     if (!list_empty( &devices_egl ))
     {
         register_extension( wgl_extensions, ARRAY_SIZE(wgl_extensions), "WGL_WINE_query_renderer" );
+        display_funcs.p_query_renderer = win32u_query_renderer;
         display_funcs.p_wglQueryCurrentRendererIntegerWINE = win32u_wglQueryCurrentRendererIntegerWINE;
         display_funcs.p_wglQueryCurrentRendererStringWINE = win32u_wglQueryCurrentRendererStringWINE;
         display_funcs.p_wglQueryRendererIntegerWINE = win32u_wglQueryRendererIntegerWINE;
@@ -2606,4 +2814,26 @@ const struct opengl_funcs *__wine_get_opengl_driver( UINT version )
 
     pthread_once( &init_once, display_funcs_init );
     return &display_funcs;
+}
+
+BOOL get_opengl_gpus( struct list *gpus )
+{
+    struct egl_platform *egl;
+
+    if (!__wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION )) return FALSE;
+
+    LIST_FOR_EACH_ENTRY( egl, &devices_egl, struct egl_platform, entry )
+    {
+        struct gpu_info *gpu;
+
+        if (!(gpu = calloc( 1, sizeof(*gpu) ))) break;
+        memcpy( &gpu->uuid, &egl->device_uuid, sizeof(egl->device_uuid) );
+        gpu->name = strdup( egl->device_name );
+        gpu->pci_id.vendor = egl->vendor_id;
+        gpu->pci_id.device = egl->device_id;
+        gpu->memory = egl->video_memory;
+        list_add_tail( gpus, &gpu->entry );
+    }
+
+    return TRUE;
 }
