@@ -55,9 +55,9 @@ struct pdb_reader
     PDB_STRING_TABLE* global_string_table;
 };
 
-static ssize_t pdb_read_at(int fd, void *buffer, size_t count, off_t offset)
+static size_t pdb_read_at(int fd, void *buffer, size_t count, off_t offset)
 {
-    return lseek(fd, offset, SEEK_SET) == (off_t)-1 ? (ssize_t)-1 : read(fd, buffer, count);
+    return lseek(fd, offset, SEEK_SET) == (off_t)-1 ? (size_t)-1 : read(fd, buffer, count);
 }
 
 static inline BOOL has_stream_been_read(struct pdb_reader* reader, unsigned stream_nr)
@@ -707,14 +707,14 @@ static void pdb_dump_symbols(struct pdb_reader* reader)
         while (imp < (const PDB_SYMBOL_IMPORT*)last)
         {
             ptr = (const char*)imp + sizeof(*imp) + strlen(imp->filename);
-            printf("\tImport: %lx\n"
+            printf("\tImport: %x\n"
                    "\t\tUnknown1:      %08x\n"
                    "\t\tUnknown2:      %08x\n"
                    "\t\tTimeDateStamp: %08x\n"
                    "\t\tAge:           %08u\n"
                    "\t\tfile1:         %s\n"
                    "\t\tfile2:         %s\n",
-                   (ULONG_PTR)((const char*)imp - first),
+                   (int)((const char*)imp - first),
                    imp->unknown1,
                    imp->unknown2,
                    imp->TimeDateStamp,

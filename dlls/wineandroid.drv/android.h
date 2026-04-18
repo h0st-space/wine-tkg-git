@@ -62,13 +62,13 @@ extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_
 
 extern void start_android_device(void);
 extern void register_native_window( HWND hwnd, struct ANativeWindow *win, BOOL client );
-extern struct ANativeWindow *create_ioctl_window( HWND hwnd, BOOL opengl, float scale );
+extern struct ANativeWindow *create_ioctl_window( HWND hwnd, BOOL opengl );
 extern struct ANativeWindow *grab_ioctl_window( struct ANativeWindow *window );
 extern void release_ioctl_window( struct ANativeWindow *window );
 extern void destroy_ioctl_window( HWND hwnd, BOOL opengl );
 extern int ioctl_window_pos_changed( HWND hwnd, const struct window_rects *rects,
                                      UINT style, UINT flags, HWND after, HWND owner );
-extern int ioctl_set_window_parent( HWND hwnd, HWND parent, float scale );
+extern int ioctl_set_window_parent( HWND hwnd, HWND parent );
 extern int ioctl_set_capture( HWND hwnd );
 extern int ioctl_set_cursor( int id, int width, int height,
                              int hotspotx, int hotspoty, const unsigned int *bits );
@@ -85,6 +85,7 @@ extern SHORT ANDROID_VkKeyScanEx( WCHAR ch, HKL hkl );
 extern void ANDROID_SetCursor( HWND hwnd, HCURSOR handle );
 extern BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height );
 extern BOOL ANDROID_CreateWindow( HWND hwnd );
+extern void ANDROID_SetDesktopWindow( HWND hwnd );
 extern void ANDROID_DestroyWindow( HWND hwnd );
 extern BOOL ANDROID_ProcessEvents( DWORD mask );
 extern LRESULT ANDROID_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
@@ -118,7 +119,7 @@ enum android_window_messages
     WM_ANDROID_REFRESH = WM_WINE_FIRST_DRIVER_MSG,
 };
 
-extern void init_gralloc( const struct hw_module_t *module );
+extern void init_ahardwarebuffers(void);
 extern HWND get_capture_window(void);
 extern void init_monitors( int width, int height );
 extern void set_screen_dpi( DWORD dpi );

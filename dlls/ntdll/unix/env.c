@@ -51,7 +51,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "winbase.h"
@@ -154,7 +153,7 @@ static NTSTATUS open_nls_data_file( const char *path, const WCHAR *sysdir, HANDL
     OBJECT_ATTRIBUTES attr;
     UNICODE_STRING valueW;
     WCHAR buffer[64];
-    char *p;
+    const char *p;
 
     wcscpy( buffer, system_dir );
     p = strrchr( path, '/' ) + 1;
@@ -484,7 +483,7 @@ const WCHAR *ntdll_get_data_dir(void)
  */
 static void set_process_name( const char *name )
 {
-    char *p;
+    const char *p;
 
 #ifdef HAVE_SETPROCTITLE
     setproctitle("-%s", name );
@@ -839,7 +838,7 @@ void init_environment(void)
 /* check if a WINE_HOST_ prefixed variable already exists in the environment */
 static BOOL host_var_exists( const char *name )
 {
-    char *end = strchr( name, '=' );
+    const char *end = strchr( name, '=' );
 
     if (!end) return FALSE;
     for (char **e = environ; *e; e++)
@@ -2419,7 +2418,12 @@ ULONG WINAPI RtlNtStatusToDosError( NTSTATUS status )
  */
 DWORD WINAPI RtlGetLastWin32Error(void)
 {
-    return NtCurrentTeb()->LastErrorValue;
+    TEB *teb = NtCurrentTeb();
+#ifdef _WIN64
+    WOW_TEB *wow_teb = get_wow_teb( teb );
+    if (wow_teb) return wow_teb->LastErrorValue;
+#endif
+    return teb->LastErrorValue;
 }
 
 /**********************************************************************

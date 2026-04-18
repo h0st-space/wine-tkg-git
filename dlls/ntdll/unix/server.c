@@ -76,7 +76,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winnt.h"
 #include "winioctl.h"
@@ -566,7 +565,7 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
         if ((ULONG_PTR)addr == call->virtual_flush.addr && size == call->virtual_flush.size)
         {
             result->virtual_flush.status = NtFlushVirtualMemory( NtCurrentProcess(),
-                                                                 (const void **)&addr, &size, 0 );
+                                                                 (const void **)&addr, &size, NULL );
             result->virtual_flush.addr = wine_server_client_ptr( addr );
             result->virtual_flush.size = size;
         }
@@ -1363,22 +1362,22 @@ static void set_case_insensitive(const char *dir)
  */
 static int setup_config_dir(void)
 {
-    char *p;
+    char *p, *dir;
     struct stat st;
     int fd_cwd = open( ".", O_RDONLY );
 
     if (chdir( config_dir ) == -1)
     {
         if (errno != ENOENT) fatal_perror( "cannot use directory %s", config_dir );
-        if ((p = strrchr( config_dir, '/' )) && p != config_dir)
+        dir = strdup( config_dir );
+        if ((p = strrchr( dir, '/' )) && p != dir)
         {
-            while (p > config_dir + 1 && p[-1] == '/') p--;
+            while (p > dir + 1 && p[-1] == '/') p--;
             *p = 0;
-            if (!stat( config_dir, &st ) && st.st_uid != getuid())
-                fatal_error( "'%s' is not owned by you, refusing to create a configuration directory there\n",
-                             config_dir );
-            *p = '/';
+            if (!stat( dir, &st ) && st.st_uid != getuid())
+                fatal_error( "'%s' is not owned by you, refusing to create a configuration directory there\n", dir );
         }
+        free( dir );
         mkdir( config_dir, 0777 );
         if (chdir( config_dir ) == -1) fatal_perror( "chdir to %s", config_dir );
         MESSAGE( "wine: created the configuration directory '%s'\n", config_dir );

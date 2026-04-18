@@ -110,7 +110,6 @@
 #include <unistd.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winnt.h"
 #include "winioctl.h"
@@ -1784,6 +1783,7 @@ static int get_file_info( const char *path, struct stat *st, ULONG *attr, ULONG 
     *attr = 0;
     ret = lstat( path, st );
     if (ret == -1) return ret;
+    if (reparse_tag) *reparse_tag = 0;
     if (S_ISLNK( st->st_mode ))
     {
         ret = stat( path, st );
@@ -2089,6 +2089,7 @@ static NTSTATUS fill_file_info( const struct stat *st, ULONG attr, void *ptr,
     case FileIdExtdBothDirectoryInformation:
         {
             FILE_ID_EXTD_BOTH_DIRECTORY_INFORMATION *info = ptr;
+            memset( &info->FileId, 0, sizeof(info->FileId) );
             *(ULONGLONG *)&info->FileId = st->st_ino;
             fill_file_info( st, attr, info, FileDirectoryInformation );
         }
@@ -2153,7 +2154,7 @@ static NTSTATUS server_get_name_info( HANDLE handle, FILE_NAME_INFORMATION *info
             const WCHAR *ptr = name->Name.Buffer;
             const WCHAR *end = ptr + name->Name.Length / sizeof(WCHAR);
 
-            /* Skip the volume mount point. */
+            /* Skip the volume mount point (if any). */
             while (ptr != end && *ptr == '\\') ++ptr;
             while (ptr != end && *ptr != '\\') ++ptr;
             while (ptr != end && *ptr == '\\') ++ptr;
@@ -2161,7 +2162,6 @@ static NTSTATUS server_get_name_info( HANDLE handle, FILE_NAME_INFORMATION *info
 
             info->FileNameLength = (end - ptr) * sizeof(WCHAR);
             if (*name_len < info->FileNameLength) status = STATUS_BUFFER_OVERFLOW;
-            else if (!info->FileNameLength) status = STATUS_INVALID_INFO_CLASS;
             else *name_len = info->FileNameLength;
             if (info->FileNameLength) memcpy( info->FileName, ptr, *name_len );
             free( name );
@@ -2189,6 +2189,13 @@ static LONGLONG get_free_bytes_for_important_data(int fd)
     if (!(url = CFURLCreateFromFileSystemRepresentation( NULL, (UInt8 *)path, strlen(path), false ))) goto done;
     if (!CFURLCopyResourcePropertyForKey( url, kCFURLVolumeAvailableCapacityForImportantUsageKey, &num, NULL )) goto done;
     CFNumberGetValue( num, kCFNumberLongLongType, &space );
+    if (space == 0)
+    {
+        /* It's unlikely that a writeable disk has exactly 0 free bytes. This
+         * probably means the disk is read-only, or is not APFS. Fall back to
+         * statfs. */
+        space = -1;
+    }
 
 done:
     free( path );
@@ -2498,30 +2505,32 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
         break;
 
     case FileFullDirectoryInformation:
-        info->full.EaSize = 0; /* FIXME */
+        /* non-Extd classes return the reparse tag in EaSize if there is one */
+        info->full.EaSize = reparse_tag;
         info->full.FileNameLength = name_len;
         break;
 
     case FileIdFullDirectoryInformation:
-        info->id_full.EaSize = 0; /* FIXME */
+        info->id_full.EaSize = reparse_tag;
         info->id_full.FileNameLength = name_len;
         break;
 
     case FileBothDirectoryInformation:
-        info->both.EaSize = 0; /* FIXME */
+        info->both.EaSize = reparse_tag;
         info->both.ShortNameLength = wcslen( names->short_name ) * sizeof(WCHAR);
         memcpy( info->both.ShortName, names->short_name, info->both.ShortNameLength );
         info->both.FileNameLength = name_len;
         break;
 
     case FileIdBothDirectoryInformation:
-        info->id_both.EaSize = 0; /* FIXME */
+        info->id_both.EaSize = reparse_tag;
         info->id_both.ShortNameLength = wcslen( names->short_name ) * sizeof(WCHAR);
         memcpy( info->id_both.ShortName, names->short_name, info->id_both.ShortNameLength );
         info->id_both.FileNameLength = name_len;
         break;
 
     case FileIdExtdBothDirectoryInformation:
+        /* Extd classes do *not* return the reparse tag in EaSize */
         info->extd_both.EaSize = 0; /* FIXME */
         info->extd_both.ReparsePointTag = reparse_tag;
         info->extd_both.ShortNameLength = wcslen( names->short_name ) * sizeof(WCHAR);
@@ -2531,6 +2540,7 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
 
     case FileIdGlobalTxDirectoryInformation:
         info->id_tx.TxInfoFlags = 0;
+        memset( &info->id_tx.LockingTransactionId, 0, sizeof(GUID) );
         info->id_tx.FileNameLength = name_len;
         break;
 
@@ -4131,7 +4141,8 @@ static NTSTATUS resolve_absolute_reparse_point( const WCHAR *target, unsigned in
 
 /* limited version of collapse_path() that only deals with . and .. elements
  * in relative symlinks */
-static NTSTATUS collapse_relative_symlink( WCHAR *path, unsigned int len, unsigned int *ret_len )
+static NTSTATUS collapse_relative_symlink( WCHAR *path, unsigned int len, unsigned int *ret_len,
+                                           unsigned int *nt_pos, const char *unix_name, int *unix_len )
 {
     const WCHAR *end = path + len;
     WCHAR *p, *start, *next;
@@ -4174,6 +4185,12 @@ static NTSTATUS collapse_relative_symlink( WCHAR *path, unsigned int len, unsign
                     while (p > start && p[-1] != '\\') p--;
                     if (p > start) p--;
                     end = p;
+                    if (p - path < *nt_pos)
+                    {
+                        while (*unix_len && unix_name[*unix_len - 1] != '/') --*unix_len;
+                        if (*unix_len) --*unix_len;
+                        *nt_pos = p - path;
+                    }
                     continue;
                 }
                 else if (p[2] == '\\') /* ..\ component */
@@ -4184,6 +4201,12 @@ static NTSTATUS collapse_relative_symlink( WCHAR *path, unsigned int len, unsign
                     while (p > start && p[-1] != '\\') p--;
                     memmove( p, next, (end - next) * sizeof(WCHAR) );
                     end -= (next - p);
+                    if (p - path < *nt_pos)
+                    {
+                        while (*unix_len && unix_name[*unix_len - 1] != '/') --*unix_len;
+                        if (*unix_len) --*unix_len;
+                        *nt_pos = p - path;
+                    }
                     continue;
                 }
             }
@@ -4264,7 +4287,8 @@ static NTSTATUS resolve_reparse_point( int fd, int root_fd, OBJECT_ATTRIBUTES *a
             memcpy( new_nt_name, name, nt_pos * sizeof(WCHAR) );
             memcpy( new_nt_name + nt_pos, target, target_len * sizeof(WCHAR) );
 
-            if ((status = collapse_relative_symlink( new_nt_name, nt_pos + target_len, &collapsed_len )))
+            if ((status = collapse_relative_symlink( new_nt_name, nt_pos + target_len,
+                                                     &collapsed_len, &nt_pos, *unix_name, &pos )))
             {
                 if (attr->RootDirectory)
                 {

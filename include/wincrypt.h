@@ -1942,6 +1942,7 @@ static const WCHAR MS_ENH_RSA_AES_PROV_XP_W[] = { 'M','i','c','r','o','s','o','f
 /* Key Specs*/
 #define AT_KEYEXCHANGE          1
 #define AT_SIGNATURE            2
+#define CERT_NCRYPT_KEY_SPEC    0xffffffff
 
 /* Provider Types */
 #define PROV_RSA_FULL             1
@@ -3497,7 +3498,8 @@ typedef struct _CERT_CHAIN_ENGINE_CONFIG
     DWORD       MaximumCachedCertificates;
     DWORD       CycleDetectionModulus;
     HCERTSTORE  hExclusiveRoot;
-    HCERTSTORE  hExclusiveRootTrustedPeople;
+    HCERTSTORE  hExclusiveTrustedPeople;
+    DWORD       dwExclusiveFlags;
 } CERT_CHAIN_ENGINE_CONFIG, *PCERT_CHAIN_ENGINE_CONFIG;
 
 /* message-related definitions */

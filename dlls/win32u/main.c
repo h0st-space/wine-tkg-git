@@ -21,7 +21,6 @@
 #include <stdarg.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "ntgdi.h"
@@ -2346,6 +2345,11 @@ HWINEVENTHOOK SYSCALL_API NtUserSetWinEventHook( DWORD event_min, DWORD event_ma
 BOOL SYSCALL_API NtUserSetWindowContextHelpId( HWND hwnd, DWORD id )
 {
     SYSCALL_FUNC( NtUserSetWindowContextHelpId );
+}
+
+BOOL SYSCALL_API NtUserSetWindowFNID( HWND hwnd, WORD fnid )
+{
+    SYSCALL_FUNC( NtUserSetWindowFNID );
 }
 
 LONG SYSCALL_API NtUserSetWindowLong( HWND hwnd, INT offset, LONG newval, BOOL ansi )

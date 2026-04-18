@@ -116,6 +116,7 @@ typedef enum {
     STAT_DIM,
     STAT_DOUNTIL,
     STAT_DOWHILE,
+    STAT_ERASE,
     STAT_EXITDO,
     STAT_EXITFOR,
     STAT_EXITFUNC,
@@ -161,6 +162,7 @@ typedef struct _dim_list_t {
 
 typedef struct _dim_decl_t {
     const WCHAR *name;
+    unsigned loc;
     BOOL is_array;
     BOOL is_public; /* Used only for class members. */
     dim_list_t *dims;
@@ -184,6 +186,11 @@ typedef struct {
     redim_decl_t *redim_decls;
 } redim_statement_t;
 
+typedef struct {
+    statement_t stat;
+    const WCHAR *identifier;
+} erase_statement_t;
+
 typedef struct _arg_decl_t {
     const WCHAR *name;
     BOOL by_ref;
@@ -197,6 +204,7 @@ typedef struct _function_decl_t {
     BOOL is_default;
     arg_decl_t *args;
     statement_t *body;
+    unsigned loc;
     struct _function_decl_t *next;
     struct _function_decl_t *next_prop_func;
 } function_decl_t;
@@ -302,6 +310,7 @@ typedef struct {
 
     int last_token;
     unsigned last_nl;
+    BOOL after_continuation;
 
     statement_t *stats;
     statement_t *stats_tail;

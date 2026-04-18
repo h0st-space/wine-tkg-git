@@ -29,7 +29,6 @@
 #include <unistd.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "win32u_private.h"
 #include "ntuser_private.h"
 
@@ -1540,6 +1539,7 @@ static VkResult win32u_vkCreateWin32SurfaceKHR( VkInstance client_instance, cons
         free( surface );
         return res;
     }
+    add_window_client_surface( surface->hwnd, surface->client );
     set_window_pixel_format( surface->hwnd, -1, TRUE );
 
     vulkan_object_init( &surface->obj.obj, host_surface );

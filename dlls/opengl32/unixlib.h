@@ -7,7 +7,6 @@
 #include <stddef.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -50,13 +49,6 @@ struct wglGetPixelFormat_params
     TEB *teb;
     HDC hdc;
     int ret;
-};
-
-struct wglGetProcAddress_params
-{
-    TEB *teb;
-    LPCSTR lpszProc;
-    PROC ret;
 };
 
 struct wglMakeCurrent_params
@@ -25734,19 +25726,6 @@ struct wglFreeMemoryNV_params
     void *pointer;
 };
 
-struct wglGetExtensionsStringARB_params
-{
-    TEB *teb;
-    HDC hdc;
-    const char *ret;
-};
-
-struct wglGetExtensionsStringEXT_params
-{
-    TEB *teb;
-    const char *ret;
-};
-
 struct wglGetPbufferDCARB_params
 {
     TEB *teb;
@@ -25895,7 +25874,6 @@ enum unix_funcs
     unix_wglCreateContext,
     unix_wglDeleteContext,
     unix_wglGetPixelFormat,
-    unix_wglGetProcAddress,
     unix_wglMakeCurrent,
     unix_wglSetPixelFormat,
     unix_wglShareLists,
@@ -28976,8 +28954,6 @@ enum unix_funcs
     unix_wglCreatePbufferARB,
     unix_wglDestroyPbufferARB,
     unix_wglFreeMemoryNV,
-    unix_wglGetExtensionsStringARB,
-    unix_wglGetExtensionsStringEXT,
     unix_wglGetPbufferDCARB,
     unix_wglGetPixelFormatAttribfvARB,
     unix_wglGetPixelFormatAttribivARB,

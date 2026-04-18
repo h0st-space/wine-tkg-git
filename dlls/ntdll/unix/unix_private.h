@@ -150,6 +150,17 @@ struct async_fileio
     HANDLE               handle;
 };
 
+struct pe_mapping_info
+{
+    HANDLE               shared_file;
+    UNICODE_STRING       nt_name;
+    ANSI_STRING          exp_name;
+    void                *version_res;
+    ULONG                version_len;
+    struct pe_image_info image;
+    char                 data[];
+};
+
 static const SIZE_T page_size = 0x1000;
 static const SIZE_T teb_size = 0x3800;  /* TEB64 + TEB32 + debug info */
 static const SIZE_T signal_stack_mask = 0xffff;
@@ -213,11 +224,11 @@ extern void *create_startup_info( const UNICODE_STRING *nt_image, ULONG process_
                                   const struct pe_image_info *pe_info, DWORD *info_size );
 extern char *get_alternate_wineloader( WORD machine );
 extern NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info *pe_info );
-extern NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *nt_name,
-                              ANSI_STRING *exp_name, USHORT machine, SECTION_IMAGE_INFORMATION *info,
-                              void **module, SIZE_T *size, ULONG_PTR limit_low, ULONG_PTR limit_high, off_t offset );
+extern NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
+                              SECTION_IMAGE_INFORMATION *info, void **module, SIZE_T *size,
+                              ULONG_PTR limit_low, ULONG_PTR limit_high, off_t offset );
 extern NTSTATUS load_unixlib_by_name( const UNICODE_STRING *nt_name, void **handle_ret );
-extern BOOL is_builtin_path( const UNICODE_STRING *path, WORD *machine );
+extern BOOL is_system_dir_path( const UNICODE_STRING *path, WORD *machine );
 extern NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **module );
 extern NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module );
 extern ULONG_PTR redirect_arm64ec_rva( void *module, ULONG_PTR rva, const IMAGE_ARM64EC_METADATA *metadata );
@@ -324,6 +335,7 @@ extern BOOL get_thread_times( int unix_pid, int unix_tid, LARGE_INTEGER *kernel_
 extern void signal_init_threading(void);
 extern NTSTATUS signal_alloc_thread( TEB *teb );
 extern void signal_free_thread( TEB *teb );
+extern void signal_disable_syscall_dispatch(void);
 extern void signal_init_process(void);
 extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg,
                                                    BOOL suspend, TEB *teb );
@@ -558,7 +570,8 @@ enum loadorder
 };
 
 extern void set_load_order_app_name( const WCHAR *app_name );
-extern enum loadorder get_load_order( const UNICODE_STRING *nt_name );
+extern enum loadorder get_load_order( const UNICODE_STRING *nt_name, BOOL is_system_dir,
+                                      const struct pe_mapping_info *pe_mapping );
 
 static inline WCHAR ntdll_towupper( WCHAR ch )
 {
@@ -659,7 +672,7 @@ static inline WORD ldt_alloc_entry( LDT_ENTRY entry )
     for (idx = 0; idx < ARRAY_SIZE(ldt_bitmap); idx++)
     {
         if (ldt_bitmap[idx] == ~0u) continue;
-        idx = idx * 32 + ffs( ~ldt_bitmap[idx] ) - 1;
+        idx = idx * 32 + __builtin_ffs( ~ldt_bitmap[idx] ) - 1;
         return ldt_update_entry( (idx << 3) | 7, entry );
     }
     return 0;

@@ -314,6 +314,7 @@ static HRESULT create_media_engine(IMFMediaEngineNotify *callback, IMFDXGIDevice
 static void test_factory(void)
 {
     IMFMediaEngineClassFactory *factory, *factory2;
+    IMFMediaEngineClassFactoryEx *factory_ex;
     struct media_engine_notify *notify;
     IMFDXGIDeviceManager *manager;
     IMFMediaEngine *media_engine;
@@ -329,6 +330,15 @@ static void test_factory(void)
         win_skip("Media Engine is not supported.\n");
         return;
     }
+
+    hr = CoCreateInstance(&CLSID_MFMediaEngineClassFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IMFMediaEngineClassFactoryEx,
+            (void **)&factory_ex);
+    ok(hr == S_OK, "Failed to create class factory, hr %#lx.\n", hr);
+    hr = IMFMediaEngineClassFactoryEx_QueryInterface(factory_ex, &IID_IMFMediaEngineClassFactory, (void **)&factory2);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok((void *)factory_ex == (void *)factory2, "got %p, %p.\n", factory, factory_ex);
+    IMFMediaEngineClassFactory_Release(factory2);
+    IMFMediaEngineClassFactoryEx_Release(factory_ex);
 
     notify = create_callback();
 
@@ -823,25 +833,22 @@ static void test_audio_session(BOOL session_count_todo)
         ok(!IsEqualGUID(&guid, &GUID_NULL), "unexpected session GUID %s.\n", wine_dbgstr_guid(&guid));
         CoTaskMemFree(name);
         hr = IAudioSessionControl2_QueryInterface(asc2, &IID_ISimpleAudioVolume, (void **)&sav);
-        todo_wine ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-        if (SUCCEEDED(hr))
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = ISimpleAudioVolume_GetMasterVolume(sav, &vol);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(vol == 1.0f, "Unexpected volume %.8e.\n", vol);
+        ISimpleAudioVolume_Release(sav);
+        hr = IAudioSessionControl2_QueryInterface(asc2, &IID_IChannelAudioVolume, (void **)&cav);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IChannelAudioVolume_GetChannelCount(cav, &channel_count);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        for (j = 0; j < channel_count; j++)
         {
-            hr = ISimpleAudioVolume_GetMasterVolume(sav, &vol);
+            hr = IChannelAudioVolume_GetChannelVolume(cav, j, &vol);
             ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-            ok(vol == 1.0f, "Unexpected volume %.8e.\n", vol);
-            ISimpleAudioVolume_Release(sav);
-            hr = IAudioSessionControl2_QueryInterface(asc2, &IID_IChannelAudioVolume, (void **)&cav);
-            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-            hr = IChannelAudioVolume_GetChannelCount(cav, &channel_count);
-            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-            for (j = 0; j < channel_count; j++)
-            {
-                hr = IChannelAudioVolume_GetChannelVolume(cav, j, &vol);
-                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-                ok(vol == 1.0f, "Unexpected channel %u volume %.8e.\n", j, vol);
-            }
-            IChannelAudioVolume_Release(cav);
+            ok(vol == 1.0f, "Unexpected channel %u volume %.8e.\n", j, vol);
         }
+        IChannelAudioVolume_Release(cav);
         IAudioSessionControl2_Release(asc2);
         IAudioSessionControl_Release(asc);
     }
@@ -1500,7 +1507,6 @@ static void test_TransferVideoFrame(void)
 
     /* now that byte stream is set, we will recieve a frame */
     res = WaitForSingleObject(notify->frame_ready_event, 5000);
-    todo_wine
     ok(!res, "Unexpected res %#lx.\n", res);
 
     if (FAILED(notify->error))
@@ -1526,9 +1532,7 @@ static void test_TransferVideoFrame(void)
     /* confirm we have a frame available before calling play */
     pts = 0;
     hr = IMFMediaEngineEx_OnVideoStreamTick(media_engine, &pts);
-    todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-    todo_wine
     ok(pts == 0, "Unexpected timestamp.\n");
 
     /* confirm we can transfer a frame before calling play */
@@ -1537,7 +1541,6 @@ static void test_TransferVideoFrame(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
     res = compare_rgb32(texture, &dst_rect, rb_texture, L"rgb32frame.bmp");
-    todo_wine
     ok(res == 0, "Unexpected %lu%% diff\n", res);
 
     hr = IMFMediaEngineEx_Play(media_engine);
@@ -2169,6 +2172,8 @@ static void test_effect(void)
 
     if (SUCCEEDED(hr = MFCreateAudioRenderer(NULL, &sink)))
     {
+        Sleep(100);
+
         count = test_transform_get_sample_count(audio_effect);
         ok(count > 0, "Unexpected processing count %u.\n", count);
         count = test_transform_get_sample_count(audio_effect2);
